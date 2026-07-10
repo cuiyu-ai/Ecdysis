@@ -1,0 +1,39 @@
+﻿[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ecdysis"
+version = "0.1.0"
+description = "Efficient and Effective Training of Runtime Harnesses for LLM Agents"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+    { name = "Ruiqing Yue" },
+    { name = "Yu Cui", email = "cuiyu@bit.edu.cn" },
+    { name = "Xianhong Xue" },
+    { name = "Tingyu Li" },
+    { name = "Zhe Cui" },
+    { name = "Haibin Zhang" },
+    { name = "Cong Zuo" },
+]
+dependencies = [
+    "pydantic>=2.0",
+    "PyYAML>=6.0.2",
+    "requests>=2.31.0",
+    "openai>=1.0.0",
+    "rank-bm25>=0.2.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.9.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/cuiyu-ai/Ecdysis"
+Repository = "https://github.com/cuiyu-ai/Ecdysis"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ecdysis"]
