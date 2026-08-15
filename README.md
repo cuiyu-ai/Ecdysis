@@ -2,13 +2,14 @@
 
 > **Ecdysis: Efficient and Effective Training of Runtime Harnesses for LLM Agents**
 
-**Ruiqing Yue<sup>1,2</sup>**, **Yu Cui<sup>3</sup>**, **Xianhong Xue<sup>1,2</sup>**, **Tingyu Li<sup>3</sup>**, **Zhe Cui<sup>1,2</sup>**, **Haibin Zhang<sup>4,5</sup>**, **Cong Zuo<sup>3</sup>**
+**Ruiqing Yue<sup>1,2</sup>**, **Yu Cui<sup>3</sup>**, **Xianhong Xue<sup>1,2</sup>**, **Tingyu Li<sup>3</sup>**, **Ting Li<sup>4</sup>**, **Zhe Cui<sup>1,2</sup>**, **Haibin Zhang<sup>5,6</sup>**, **Cong Zuo<sup>3</sup>**
 
 <sup>1</sup> Chengdu Institute of Computer Applications, Chinese Academy of Sciences  
 <sup>2</sup> University of Chinese Academy of Sciences  
 <sup>3</sup> Beijing Institute of Technology  
-<sup>4</sup> Yangtze Delta Region Institute of Tsinghua University, Zhejiang  
-<sup>5</sup> Jiaxing Key Laboratory of Artificial Intelligence and Cyber Resilience
+<sup>4</sup> Beijing University of Technology  
+<sup>5</sup> Yangtze Delta Region Institute of Tsinghua University, Zhejiang  
+<sup>6</sup> Jiaxing Key Laboratory of Artificial Intelligence and Cyber Resilience
 
 Ruiqing Yue and Yu Cui contributed equally to this work. Yu Cui proposed the algorithm and Ruiqing Yue performed the experiments.
 
