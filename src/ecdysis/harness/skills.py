@@ -1,4 +1,4 @@
-﻿"""H5 Skill injection: task-aware learned tips derived from training trajectories.
+"""H5 Skill injection: task-aware learned tips derived from training trajectories.
 
 Skills are short, actionable tips extracted from successful and failed training
 conversations.  At agent-build time the top-k most relevant skills are retrieved
@@ -59,7 +59,8 @@ class Skill:
         ``"failure"`` — derived from a recurring error pattern.
         ``"success"`` — derived from an exemplary handling pattern.
     task_ids:
-        Training task IDs that motivated this skill (documentation only).
+        Optional training-provenance IDs. The public baseline leaves these
+        empty because they do not affect retrieval or runtime behavior.
     """
 
     id: str
@@ -101,7 +102,7 @@ RETAIL_SKILLS: list[Skill] = [
             "a replacement item."
         ),
         source="failure",
-        task_ids=[3, 4],
+        task_ids=[],
     ),
     Skill(
         id="address_from_order_history",
@@ -122,7 +123,7 @@ RETAIL_SKILLS: list[Skill] = [
             "item changes in the same task."
         ),
         source="failure",
-        task_ids=[22, 41, 43, 87, 109, 110],
+        task_ids=[],
     ),
     Skill(
         id="pending_item_removal_fallback",
@@ -142,7 +143,7 @@ RETAIL_SKILLS: list[Skill] = [
             "is impossible, do not cancel."
         ),
         source="failure",
-        task_ids=[28, 30, 57, 76, 88],
+        task_ids=[],
     ),
     Skill(
         id="bulk_order_completion",
@@ -160,7 +161,7 @@ RETAIL_SKILLS: list[Skill] = [
             "items out of the write calls."
         ),
         source="failure",
-        task_ids=[28, 54, 103, 104],
+        task_ids=[],
     ),
     Skill(
         id="same_order_multi_item_exchange",
@@ -181,7 +182,7 @@ RETAIL_SKILLS: list[Skill] = [
             "from a different order."
         ),
         source="failure",
-        task_ids=[23, 98, 99],
+        task_ids=[],
     ),
     Skill(
         id="numeric_option_variant_selection",
@@ -201,7 +202,7 @@ RETAIL_SKILLS: list[Skill] = [
             "fallback variant instead of returning the item."
         ),
         source="failure",
-        task_ids=[52, 91, 95, 98, 99],
+        task_ids=[],
     ),
     Skill(
         id="category_scope_precision",
@@ -217,7 +218,7 @@ RETAIL_SKILLS: list[Skill] = [
             "and out-of-scope products, write only the in-scope item_ids."
         ),
         source="failure",
-        task_ids=[14, 31, 54],
+        task_ids=[],
     ),
     Skill(
         id="pending_replacement_not_new_order",
@@ -234,7 +235,7 @@ RETAIL_SKILLS: list[Skill] = [
             "unsupported, a same-product replacement may still satisfy the fallback."
         ),
         source="failure",
-        task_ids=[20, 63, 96, 109],
+        task_ids=[],
     ),
     Skill(
         id="execute_after_confirmation",
@@ -251,7 +252,7 @@ RETAIL_SKILLS: list[Skill] = [
             "apply the newest user scope."
         ),
         source="failure",
-        task_ids=[6, 7, 30, 72, 87],
+        task_ids=[],
     ),
 ]
 
@@ -1663,7 +1664,7 @@ AIRLINE_SKILLS: list[Skill] = [
             "The exact amount is in the H4 annotation appended to the tool result."
         ),
         source="failure",
-        task_ids=[7, 11, 14],
+        task_ids=[],
     ),
     Skill(
         id="verify_correct_reservation",
@@ -1687,7 +1688,7 @@ AIRLINE_SKILLS: list[Skill] = [
             "origin, destination, and dates to help you identify the right one."
         ),
         source="failure",
-        task_ids=[38, 42],
+        task_ids=[],
     ),
     Skill(
         id="one_certificate_per_reservation",
@@ -1715,7 +1716,7 @@ AIRLINE_SKILLS: list[Skill] = [
             "the new booking; use only the balances currently shown in user details."
         ),
         source="failure",
-        task_ids=[23],
+        task_ids=[],
     ),
     Skill(
         id="round_trip_include_all_legs",
@@ -1737,7 +1738,7 @@ AIRLINE_SKILLS: list[Skill] = [
             "requested return date instead of reusing the outbound date."
         ),
         source="failure",
-        task_ids=[15, 33],
+        task_ids=[],
     ),
     Skill(
         id="check_cancellation_eligibility",
@@ -1766,7 +1767,7 @@ AIRLINE_SKILLS: list[Skill] = [
             "the reservation's insurance, cabin, and created_at before calling cancel."
         ),
         source="failure",
-        task_ids=[5, 23],
+        task_ids=[],
     ),
     Skill(
         id="budget_before_write",
@@ -1786,7 +1787,7 @@ AIRLINE_SKILLS: list[Skill] = [
             "reservation, not just one passenger or one leg."
         ),
         source="failure",
-        task_ids=[10, 12, 14, 23, 33],
+        task_ids=[],
     ),
     Skill(
         id="other_upcoming_reservations_scan",
@@ -1807,7 +1808,7 @@ AIRLINE_SKILLS: list[Skill] = [
             "passenger identity, and fallback instructions."
         ),
         source="failure",
-        task_ids=[7, 42],
+        task_ids=[],
     ),
 ]
 
@@ -1835,7 +1836,7 @@ BANKING_KNOWLEDGE_SKILLS: list[Skill] = [
             "BEFORE executing any account changes. Do not skip this step."
         ),
         source="failure",
-        task_ids=[4, 5, 23, 36, 37],
+        task_ids=[],
     ),
     Skill(
         id="user_lookup_fallback",
@@ -1850,7 +1851,7 @@ BANKING_KNOWLEDGE_SKILLS: list[Skill] = [
             "There is NO get_user_information_by_phone tool — never attempt it."
         ),
         source="failure",
-        task_ids=[4, 5, 33],
+        task_ids=[],
     ),
     Skill(
         id="new_user_credit_card_application",
@@ -1867,7 +1868,7 @@ BANKING_KNOWLEDGE_SKILLS: list[Skill] = [
             "Do NOT process the application yourself — the user initiates it."
         ),
         source="failure",
-        task_ids=[25, 3, 24],
+        task_ids=[],
     ),
     Skill(
         id="email_mismatch_ownership_dispute",
@@ -1885,7 +1886,7 @@ BANKING_KNOWLEDGE_SKILLS: list[Skill] = [
             "an underlying identity verification failure."
         ),
         source="failure",
-        task_ids=[4, 29],
+        task_ids=[],
     ),
     Skill(
         id="referral_workflow",
@@ -1901,7 +1902,7 @@ BANKING_KNOWLEDGE_SKILLS: list[Skill] = [
             "You (the agent) must call submit_referral — do not wait for the user."
         ),
         source="failure",
-        task_ids=[99, 101, 16],
+        task_ids=[],
     ),
     Skill(
         id="transfer_on_user_request",
@@ -1916,7 +1917,7 @@ BANKING_KNOWLEDGE_SKILLS: list[Skill] = [
             "applicable reason code. Do not delay or ask clarifying questions."
         ),
         source="failure",
-        task_ids=[34],
+        task_ids=[],
     ),
 ]
 

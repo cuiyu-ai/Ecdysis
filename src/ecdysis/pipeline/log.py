@@ -1,4 +1,4 @@
-﻿"""Shared log format for E1-E5 experiment pipelines."""
+"""Shared log format for E1–E5 experiment pipelines."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def log_phase(label: str, phase: str, detail: str = "") -> None:
 
 
 def log_saved(label: str, path: Path | str) -> None:
-    print(f"  [{label}] saved ->{path}")
+    print(f"  [{label}] saved → {path}")
 
 
 def log_note(label: str, message: str) -> None:

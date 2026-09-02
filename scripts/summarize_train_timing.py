@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Summarize step timings from E3–E5 experiment result JSON files."""
 
 from __future__ import annotations
@@ -63,16 +63,20 @@ def main() -> int:
     args = parser.parse_args()
 
     globs = {
-        "E3": "E3_original_evolution/**/*.json",
-        "E4": "E4_cross_instance_evolution/**/*.json",
-        "E5": "E5_debate/**/*.json",
+        "E3": ("E3_original_evolution/**/*.json",),
+        "E4": (
+            "E4_bot_evolution/**/*.json",  # Historical result directory.
+            "E4_cross_instance_evolution/**/*.json",
+        ),
+        "E5": ("E5_debate/**/*.json",),
     }
     selected = globs.keys() if args.experiment == "all" else [args.experiment]
 
     print("| Exp | Run ID | Domain | Total | Train | Final test | pass@k |")
     print("|-----|--------|--------|-------|-------|------------|--------|")
     for exp in selected:
-        for row in _load_results(globs[exp], args.domain):
+        rows = [row for pattern in globs[exp] for row in _load_results(pattern, args.domain)]
+        for row in rows:
             timing = row["timing"]
             if not timing:
                 continue

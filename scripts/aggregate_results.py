@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Aggregate experiment results into paper-ready tables.
 
 Reads from data/experiments/ and generates:
@@ -22,17 +22,25 @@ PROJECT_ROOT = Path(__file__).parent.parent
 EXPERIMENTS_DIR = PROJECT_ROOT / "data" / "experiments"
 TABLES_DIR = PROJECT_ROOT / "data" / "paper_tables"
 
+EXPERIMENT_DIR_ALIASES = {
+    "E4_cross_instance_evolution": (
+        "E4_bot_evolution",  # Historical result directory; do not rename artifacts.
+        "E4_cross_instance_evolution",
+    ),
+}
+
 
 def load_experiment_results(exp_name: str, domain: str) -> list:
     """Load all results for an experiment/domain combination."""
-    exp_dir = EXPERIMENTS_DIR / exp_name / domain
-    if not exp_dir.exists():
-        return []
-
     results = []
-    for f in sorted(exp_dir.glob("*.json")):
-        data = json.loads(f.read_text())
-        results.append(data)
+    dir_names = EXPERIMENT_DIR_ALIASES.get(exp_name, (exp_name,))
+    for dir_name in dir_names:
+        exp_dir = EXPERIMENTS_DIR / dir_name / domain
+        if not exp_dir.exists():
+            continue
+        for f in sorted(exp_dir.glob("*.json")):
+            data = json.loads(f.read_text())
+            results.append(data)
 
     return results
 
@@ -113,7 +121,7 @@ def format_csv_baseline(table: dict) -> str:
 
 def format_csv_evolution(table: dict) -> str:
     """Format evolution table as CSV."""
-    lines = ["Domain,E3 Original,E4 Cross-Instance Learning,E5 Debate,E3 Tokens,E4 Tokens,E5 Tokens"]
+    lines = ["Domain,E3 Original,E4 Mixed Training,E5 Debate,E3 Tokens,E4 Tokens,E5 Tokens"]
 
     for domain, data in sorted(table.items()):
         row = [domain]
@@ -154,7 +162,7 @@ def format_latex_baseline(table: dict) -> str:
         lines.append("\\midrule")
         lines.append(f"Average & {avg_no_h:.1f}\\% & {avg_frozen:.1f}\\% & +{avg_imp:.1f}\\% \\\\")
 
-    lines.extend(["\\Cross-Instance Learningtomrule", "\\end{tabular}", "\\end{table}"])
+    lines.extend(["\\bottomrule", "\\end{tabular}", "\\end{table}"])
     return "\n".join(lines)
 
 
@@ -179,7 +187,7 @@ def main():
             outfile = TABLES_DIR / "table1_baseline.tex"
 
         outfile.write_text(content)
-        print(f"Table 1 saved ->{outfile}")
+        print(f"Table 1 saved → {outfile}")
 
     # Table 2: Evolution
     evolution_table = build_evolution_table(domains)
@@ -187,7 +195,7 @@ def main():
         content = format_csv_evolution(evolution_table)
         outfile = TABLES_DIR / "table2_evolution.csv"
         outfile.write_text(content)
-        print(f"Table 2 saved ->{outfile}")
+        print(f"Table 2 saved → {outfile}")
 
     # Print summary
     print(f"\n{'='*60}")

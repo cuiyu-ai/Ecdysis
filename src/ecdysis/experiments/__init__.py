@@ -1,4 +1,4 @@
-﻿"""Per-experiment code for E1-E5.
+"""Per-experiment code for E1-E5.
 
 Each experiment implements its own ``run()`` with an explicit pipeline.
 Shared eval / patch / artifact helpers live in ``base.py``; named

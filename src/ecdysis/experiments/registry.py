@@ -1,4 +1,4 @@
-﻿"""Registry mapping experiment names to their implementation classes."""
+"""Registry mapping experiment names to their implementation classes."""
 
 from __future__ import annotations
 

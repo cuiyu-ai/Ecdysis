@@ -1,4 +1,6 @@
-﻿"""Pipeline helpers for multi-round evolution experiments."""
+"""Pipeline helpers for multi-round evolution experiments."""
+
+from importlib import import_module
 
 # Avoid eager imports here: ``experiments.base`` imports ``pipeline.log``, which
 # loads this package; importing ``steps`` would circle back into ``base``.
@@ -22,7 +24,7 @@ def __getattr__(name: str):
         from .timing import PipelineTimer
 
         return PipelineTimer
-    from . import steps
+    steps = import_module(".steps", __name__)
 
     if hasattr(steps, name):
         return getattr(steps, name)

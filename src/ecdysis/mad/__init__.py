@@ -1,4 +1,4 @@
-﻿"""Multi-Agent Debate (MAD) for harness evolution.
+"""Multi-Agent Debate (MAD) for harness evolution.
 
 Three roles debate how to update the harness from failure clusters;
 a moderator synthesizes a patch spec that OpenCode applies in staging.

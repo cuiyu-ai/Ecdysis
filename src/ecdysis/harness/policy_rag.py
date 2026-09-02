@@ -1,4 +1,4 @@
-﻿"""Policy RAG: lightweight retrieval-augmented policy injection.
+"""Policy RAG: lightweight retrieval-augmented policy injection.
 
 Two usage modes:
 

@@ -1,4 +1,4 @@
-﻿"""Shared scaffolding for E1-E5 experiments.
+"""Shared scaffolding for E1-E5 experiments.
 
 Owns the eval subprocess runner, result loading, and the H2/H3/H4
 harness patch lifecycle (snapshot, apply, revert).  Subclasses only
@@ -30,6 +30,7 @@ from ecdysis.experiment_config import (
     resolve_nl_assertions,
 )
 from ecdysis.harness_patch import (
+    HarnessSnapshot,
     HarnessPatch,
     apply_patch,
     revert_harness,
@@ -42,6 +43,11 @@ from ecdysis.artifacts import (
     load_skill_artifact,
     merge_skill_artifacts,
     save_skill_artifact,
+)
+from ecdysis.provenance import (
+    sanitize_for_persistence,
+    sanitize_json_file,
+    write_run_manifest,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -113,10 +119,11 @@ class BaseExperiment:
         self.eval_config = eval_config
         self.config_path = config_path
         self.dry_run = dry_run
+        self._harness_snapshot: HarnessSnapshot | None = None
 
     @property
     def label(self) -> str:
-        """Short experiment id used in logs and eval output tags (E1-E5)."""
+        """Short experiment id used in logs and eval output tags (E1–E5)."""
         return self.exp_name
 
     @classmethod
@@ -242,9 +249,11 @@ class BaseExperiment:
                     timeout=timeout,
                 )
                 if result.returncode == 0:
-                    return self._locate_result_dir(
+                    result_dir = self._locate_result_dir(
                         output_tag, self.eval_config.get("domain", "airline")
                     )
+                    sanitize_json_file(result_dir / "results.json")
+                    return result_dir
                 last_exc = RuntimeError(
                     f"eval_harness.py failed for {output_tag} (exit {result.returncode})\n"
                     f"stdout (tail): {result.stdout[-2000:]}\n"
@@ -306,7 +315,20 @@ class BaseExperiment:
         out_dir = self._experiment_dir(domain)
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / f"{timestamp}.json"
-        out_path.write_text(json.dumps(result.to_dict(), indent=2))
+        payload = sanitize_for_persistence(result.to_dict())
+        manifest_path = write_run_manifest(
+            project_root=PROJECT_ROOT,
+            experiment=self.exp_name,
+            experiment_config=self.exp_config,
+            evaluation_config=self.eval_config,
+            config_path=self.config_path,
+            domain=domain,
+            run_id=timestamp,
+            dry_run=self.dry_run,
+            result_payload=payload,
+        )
+        payload["provenance"] = {"manifest": str(manifest_path)}
+        out_path.write_text(json.dumps(payload, indent=2))
         return out_path
 
     def _artifact_dir(
@@ -382,13 +404,22 @@ class BaseExperiment:
         if self.dry_run:
             log_dry_run(self.label, "skipping harness snapshot")
             return
-        snapshot_harness(project_root=PROJECT_ROOT)
+        if self._harness_snapshot is not None:
+            raise RuntimeError("Harness snapshot already exists for this experiment")
+        self._harness_snapshot = snapshot_harness(project_root=PROJECT_ROOT)
 
     def apply_harness_patch(self, patch: HarnessPatch) -> None:
         apply_patch(patch, project_root=PROJECT_ROOT)
 
-    def revert_harness(self) -> None:
+    def revert_harness(self, *, finalize: bool = False) -> None:
         if self.dry_run:
             log_dry_run(self.label, "skipping harness revert")
             return
-        revert_harness(project_root=PROJECT_ROOT)
+        if self._harness_snapshot is None:
+            raise RuntimeError("Cannot revert harness: no experiment snapshot exists")
+        try:
+            revert_harness(self._harness_snapshot, project_root=PROJECT_ROOT)
+        finally:
+            if finalize:
+                self._harness_snapshot.cleanup()
+                self._harness_snapshot = None

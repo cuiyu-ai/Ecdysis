@@ -1,4 +1,4 @@
-﻿"""Legacy trajectory-judge helpers (superseded by ``ecdysis.mad``).
+"""Legacy trajectory-judge helpers (superseded by ``ecdysis.mad``).
 
 E5 now uses Multi-Agent Debate during harness evolution, not a judge
 that selects among trajectories.  This module is kept for reference only.

@@ -1,4 +1,4 @@
-﻿"""H3: Tool-description policy embedding.
+"""H3: Tool-description policy embedding.
 
 Unlike the system prompt (a message at position 0 that gets pushed down by
 accumulating conversation turns), **tool descriptions are re-sent in every
@@ -459,7 +459,7 @@ customer_demands_after_unavailable_offer_refusal. \
 When uncertain, KB_search the transfer reason guide before calling.""",
     "log_verification": """\
 Use ONLY actual information the user provided in this conversation. \
-Never use fabricated values (e.g. 'John Doe', 'usr_12345', 'unknown'). \
+Never use placeholder values (e.g. 'John Doe', 'usr_12345', 'unknown'). \
 If a field was not provided by the user, pass an empty string.""",
     "get_credit_card_accounts_by_user": """\
 "No records found" means no linked account was found — it does NOT confirm the \

@@ -4,7 +4,7 @@ These command-line tools support evaluation, experiment orchestration, aggregati
 
 | Script | Purpose |
 |---|---|
-| `run_experiment.py` | Dispatch an E1-E5 experiment from a user-supplied local YAML run file |
+| `run_experiment.py` | Dispatch a configured experiment from a user-supplied local YAML run file |
 | `eval_harness.py` | Run one harness evaluation and write simulation summaries |
 | `aggregate_results.py` | Aggregate experiment outputs into paper-table summaries |
 | `summarize_train_timing.py` | Summarize training wall-clock intervals from run metadata |

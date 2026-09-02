@@ -1,4 +1,4 @@
-﻿"""Role prompts for harness-evolution MAD (Analyst / Critic / Engineer / Moderator)."""
+"""Role prompts for harness-evolution MAD (Analyst / Critic / Engineer / Moderator)."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ ROLE_SYSTEM: dict[str, str] = {
         "  implementation_notes: string for the coding agent\n"
         "Resolve disputes conservatively: prefer changes that fix cross-task "
         "clusters without oracle leakage. Never propose edits to base.py or "
-        "dynamic suffixes on tool outputs (step counters, etc.) ->they break "
+        "dynamic suffixes on tool outputs (step counters, etc.) — they break "
         "message_history replay."
     ),
 }

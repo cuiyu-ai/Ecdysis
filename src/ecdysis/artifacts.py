@@ -1,4 +1,4 @@
-﻿"""Structured artifacts produced by evolution experiments.
+"""Structured artifacts produced by evolution experiments.
 
 Evolution experiments should not edit ``tau2/harness/*.py`` directly.  They
 produce JSON artifacts containing learned skills, and evaluation loads those
@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 
-ArtifactMode = Literal["serial", "cross_instance", "debate", "mad", "manual"]
+ArtifactMode = Literal["serial", "cross_instance", "mad", "manual"]
 
 
 @dataclass
@@ -47,7 +47,7 @@ class EvolvedSkill:
             metadata=dict(data.get("metadata") or {}),
         )
 
-    def to_harness_skill(self):
+    def to_tau2_skill(self):
         """Convert to ``ecdysis.harness.skills.Skill`` lazily to avoid import cycles."""
         from ecdysis.harness.skills import Skill
 
@@ -67,10 +67,6 @@ class EvolvedSkill:
             task_ids=numeric_task_ids,
             issue_type=self.issue_type,
         )
-
-    def to_tau2_skill(self):
-        """Backward-compatible alias for older experiment code."""
-        return self.to_harness_skill()
 
 
 @dataclass
@@ -140,7 +136,7 @@ def load_evolved_skills(paths: list[str | Path], domain: str | None = None):
             if skill.id in seen_ids:
                 continue
             seen_ids.add(skill.id)
-            skills.append(skill.to_harness_skill())
+            skills.append(skill.to_tau2_skill())
     return skills
 
 

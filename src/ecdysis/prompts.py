@@ -1,4 +1,4 @@
-﻿"""Prompt templates for evolution analysis, MAD roles, and prompt optimization.
+"""Prompt templates for evolution analysis, MAD roles, and prompt optimization.
 
 Evolution prompts guide OpenCode harness edits. MAD role prompts live in
 ``ecdysis.mad.roles``; ``DEBATE_JUDGE_PROMPT`` is legacy (unused by E5).
@@ -53,7 +53,7 @@ Return a JSON object with:
 """
 
 
-CROSS_INSTANCE_BATCH_ANALYSIS_PROMPT = """You are a harness evolution expert analyzing failures across MULTIPLE tasks to find common patterns.
+BOT_BATCH_ANALYSIS_PROMPT = """You are a harness evolution expert analyzing failures across MULTIPLE tasks to find common patterns.
 
 ## Harness Lifecycle Layers
 The harness operates at four stages of the agent lifecycle:

@@ -1,9 +1,9 @@
-﻿"""E3: serial per-failure evolution (Life-Harness baseline).
+"""E3: serial per-failure evolution (Life-Harness baseline).
 
 Pipeline (each train round):
   1. train eval on train split (1 trial per task)
   2. collect failed trajectories
-  3. serial OpenCode ->one staging call per failure (original mode)
+  3. serial OpenCode — one staging call per failure (original mode)
   4. merge into HarnessPatch + H5 skills, apply for next round
 
 Final: test eval, then git revert tau2/harness.
@@ -11,10 +11,11 @@ Final: test eval, then git revert tau2/harness.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from ecdysis.evolution import analyze_failures_serial, collect_all_trajectories
-from ecdysis.harness_patch import HarnessPatch
+from ecdysis.harness_patch import HarnessPatch, load_patch
 from ecdysis.pipeline.log import log_round, log_train_round_header
 from ecdysis.pipeline.steps import (
     append_round_record,
@@ -25,6 +26,7 @@ from ecdysis.pipeline.steps import (
     persist_round_artifacts,
     run_final_test_eval,
     run_train_eval,
+    EvolutionPaused,
 )
 
 from .base import BaseExperiment, ExperimentResult
@@ -42,16 +44,33 @@ class ExperimentE3(BaseExperiment):
         agent_model = ctx["agent_model"]
         timer = ctx["timer"]
 
-        round_records: list[dict[str, Any]] = []
-        skill_artifact_path = None
-        applied_patch: HarnessPatch | None = None
-        last_passk: float | None = None
+        run_state = ctx["run_state"]
+        start_round = ctx["start_round"]
+        round_records: list[dict[str, Any]] = ctx["round_records"]
+        skill_artifact_path = ctx["skill_artifact_path"]
+        patch_chain: list[Path] = ctx["patch_chain"]
+        applied_patch: HarnessPatch | None = (
+            load_patch(patch_chain[-1]) if patch_chain else None
+        )
+        last_passk: float | None = ctx["last_passk"]
 
         self.snapshot_harness()
         try:
-            for round_num in range(1, rounds + 1):
+            stop_after = self.eval_config.get("stop_after_evolution_round")
+            if stop_after is not None and start_round > int(stop_after):
+                raise EvolutionPaused(
+                    f"evolution round {stop_after} was already checkpointed"
+                )
+            if patch_chain and not self.dry_run:
+                for patch_path in patch_chain:
+                    self.apply_harness_patch(load_patch(patch_path))
+            round_iter = (
+                [] if ctx["early_stopped"] else range(start_round, rounds + 1)
+            )
+            for round_num in round_iter:
                 with timer.step("apply_patch", label=label, round_num=round_num):
-                    apply_patch_before_round(self, applied_patch)
+                    if not (round_num == start_round and patch_chain):
+                        apply_patch_before_round(self, applied_patch)
 
                 log_train_round_header(
                     label,
@@ -68,6 +87,11 @@ class ExperimentE3(BaseExperiment):
                         timestamp=timestamp,
                         params=params,
                         skill_artifact_path=skill_artifact_path,
+                        resume_train_dir=run_state.train_dir(round_num),
+                    )
+                if not self.dry_run:
+                    run_state.record_train(
+                        round_num, train_dir, skill_artifact_path
                     )
 
                 if self.dry_run:
@@ -84,7 +108,7 @@ class ExperimentE3(BaseExperiment):
                     ):
                         failures = self.collect_failures(train_dir)
                     if not failures:
-                        log_round(label, round_num, "no failures ->skip evolution")
+                        log_round(label, round_num, "no failures — skip evolution")
                         append_round_record(
                             round_records,
                             round_num=round_num,
@@ -102,20 +126,52 @@ class ExperimentE3(BaseExperiment):
                     log_round(
                         label,
                         round_num,
-                        f"{len(failures)} failures ->serial OpenCode (per failure)",
+                        f"{len(failures)} failures → serial OpenCode (per failure)",
                     )
                     with timer.step(
                         "evolution_serial", label=label, round_num=round_num
                     ):
+                        checkpoint_root = Path(
+                            self.eval_config.get(
+                                "evolution_checkpoint_root",
+                                artifact_dir / "serial_checkpoints",
+                            )
+                        ).expanduser()
                         analysis = analyze_failures_serial(
                             failures,
                             agent_model=agent_model,
                             all_trajectories=all_trajs,
                             domain=domain,
+                            checkpoint_dir=(
+                                checkpoint_root / f"round_{round_num}"
+                            ).resolve(),
+                            timeout=int(
+                                self.eval_config.get(
+                                    "evolution_timeout_seconds", 600
+                                )
+                            ),
+                            max_retries=int(
+                                self.eval_config.get(
+                                    "evolution_max_retries", 1
+                                )
+                            ),
+                            context_scope=str(
+                                self.eval_config.get(
+                                    "serial_context_scope", "failure_only"
+                                )
+                            ),
                         )
 
                 pre_round_skill = skill_artifact_path
+                analysis["evolution_audit"] = {
+                    "mode": "serial",
+                    "opencode_calls_requested": len(failures),
+                    "mad_calls_requested": 0,
+                    "opencode_usage": analysis.get("opencode_usage"),
+                }
+
                 pre_round_patch = applied_patch
+                pre_round_patch_chain = list(patch_chain)
                 with timer.step(
                     "persist_artifacts", label=label, round_num=round_num
                 ):
@@ -131,6 +187,10 @@ class ExperimentE3(BaseExperiment):
                         evolution_mode="original",
                         metadata={"evolution_model": agent_model},
                         previous_skill_artifact=pre_round_skill,
+                    )
+                if analysis.get("code_changes"):
+                    patch_chain.append(
+                        artifact_dir / f"round_{round_num}_harness.json"
                     )
 
                 train_summary = {} if self.dry_run else self._load_summary(train_dir)
@@ -171,6 +231,27 @@ class ExperimentE3(BaseExperiment):
                 )
                 applied_patch = patch_box[0]
                 skill_artifact_path = skill_box[0]
+                if (
+                    round_records
+                    and round_records[-1].get("patch_decision", {}).get("status")
+                    == "rejected_regression"
+                ):
+                    patch_chain = pre_round_patch_chain
+                if not self.dry_run:
+                    run_state.complete_round(
+                        round_num,
+                        record=round_records[-1],
+                        skill_artifact_path=skill_artifact_path,
+                        patch_chain=patch_chain,
+                        last_passk=last_passk,
+                        stop=stop,
+                    )
+                if (
+                    stop_after == round_num
+                ):
+                    raise EvolutionPaused(
+                        f"completed and checkpointed evolution round {round_num}"
+                    )
                 if stop:
                     break
 
@@ -185,8 +266,11 @@ class ExperimentE3(BaseExperiment):
                 params=params,
                 skill_artifact_path=skill_artifact_path,
                 timer=timer,
+                resume_test_dir=run_state.final_test_dir(),
             )
-            return finish_evolution_result(
+            if not self.dry_run:
+                run_state.record_final_test(test_dir)
+            result = finish_evolution_result(
                 self,
                 label=label,
                 domain=domain,
@@ -197,5 +281,8 @@ class ExperimentE3(BaseExperiment):
                 artifact_dir=artifact_dir,
                 timer=timer,
             )
+            if not self.dry_run:
+                run_state.complete()
+            return result
         finally:
-            self.revert_harness()
+            self.revert_harness(finalize=True)

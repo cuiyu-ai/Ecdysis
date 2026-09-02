@@ -2,15 +2,16 @@
 
 > **Ecdysis: Efficient and Effective Training of Runtime Harnesses for LLM Agents**
 
-**Ruiqing Yue<sup>1,2</sup>**, **Yu Cui<sup>3</sup>**, **Xianhong Xue<sup>1,2</sup>**, **Tingyu Li<sup>3</sup>**, **Zhe Cui<sup>1,2</sup>**, **Haibin Zhang<sup>4,5</sup>**, **Cong Zuo<sup>3</sup>**
+**Ruiqing Yue<sup>1,2</sup>**, **Yu Cui<sup>3</sup>**, **Xianhong Xue<sup>1,2</sup>**, **Tingyu Li<sup>3</sup>**, **Ting Li<sup>4</sup>**, **Wenzhuo Zhu<sup>4</sup>**, **Zhe Cui<sup>1,2</sup>**, **Haibin Zhang<sup>5,6</sup>**, **Cong Zuo<sup>3</sup>**
 
-<sup>1</sup> Chengdu Institute of Computer Applications, Chinese Academy of Sciences  
-<sup>2</sup> University of Chinese Academy of Sciences  
-<sup>3</sup> Beijing Institute of Technology  
-<sup>4</sup> Yangtze Delta Region Institute of Tsinghua University, Zhejiang  
-<sup>5</sup> Jiaxing Key Laboratory of Artificial Intelligence and Cyber Resilience
+<sup>1</sup> Chengdu Institute of Computer Applications, Chinese Academy of Sciences<br>
+<sup>2</sup> University of Chinese Academy of Sciences<br>
+<sup>3</sup> Beijing Institute of Technology<br>
+<sup>4</sup> Beijing University of Technology<br>
+<sup>5</sup> Yangtze Delta Region Institute of Tsinghua University, Zhejiang<br>
+<sup>6</sup> Jiaxing Key Laboratory of Artificial Intelligence and Cyber Resilience
 
-Ruiqing Yue and Yu Cui contributed equally to this work. Yu Cui proposed the algorithm and Ruiqing Yue performed the experiments.
+Yu Cui and Ruiqing Yue are co-first authors and contributed equally to this work. Yu Cui proposed the algorithm and Ruiqing Yue performed the experiments.
 
 [Project Page](https://github.com/cuiyu-ai/Ecdysis) | **Project Lead:** Yu Cui (<cuiyu@bit.edu.cn>)
 
@@ -33,48 +34,29 @@ The workflow has four stages:
 
 The research design studies two complementary components:
 
-- **Cross-Instance Learning:** groups recurring failure patterns across task instances and reasons over them jointly instead of patching each trajectory independently.
+- **Mixed Training:** groups recurring failure patterns across task instances and reasons over them jointly instead of patching each trajectory independently.
 - **Multi-Agent Debate (MAD):** uses analyst, critic, engineer, and moderator roles to challenge the diagnosis and synthesize an implementation-ready update specification.
 
-The intended comparison progresses from no harness and a frozen harness, through serial single-task evolution, to Cross-Instance Learning and the full Cross-Instance Learning + MAD method.
+The intended comparison progresses from no harness and a frozen harness, through serial single-task evolution, to Mixed Training and the full Mixed Training + MAD method.
 
 ## Experimental Results
 
-The current results use the `airline` test split with 20 tasks and 3 trials per task (60 simulations per configuration). The user simulator is `openai/deepseek-v4-flash` through DashScope-compatible mode. `pass@3` is the proportion of tasks with at least one successful trial out of three.
+Macro-averaged results across the ten model-domain cells:
 
-| Agent model | E1: No harness | E2: Frozen harness | E3: Serial evolution | E5: Cross-Instance Learning + MAD |
-|---|:---:|:---:|:---:|:---:|
-| qwen3-8b | 0.35 | 0.65 | 0.50 | 0.65 |
-| qwen3-14b | 0.30 | 0.55 | 0.40 | 0.65 |
-| qwen3-32b | 0.35 | 0.70 | **0.80** | **0.80** |
+| Method | AVG (%) | Pass@3 (%) | Pass^3 (%) | Tokens (M) | Time (s) |
+|---|---:|---:|---:|---:|---:|
+| Direct | 38.17 &plusmn; 5.85 | 53.50 | 22.50 | 8.701 &plusmn; 0.863 | 87.91 &plusmn; 10.06 |
+| Human-Aug. | 51.67 &plusmn; 8.47 | 66.00 | 37.00 | 11.349 &plusmn; 1.298 | 118.53 &plusmn; 20.90 |
+| Self-Evolution | 46.67 &plusmn; 9.22 | 63.50 | 29.00 | 11.567 &plusmn; 1.148 | 126.08 &plusmn; 16.59 |
+| **Ecdysis (w/o MAD)** | 54.67 &plusmn; 5.55 | 66.50 | 42.00 | 10.354 &plusmn; 1.169 | 131.42 &plusmn; 24.29 |
+| **Ecdysis (w/ MAD)** | **59.33 &plusmn; 5.08** | **71.50** | **45.00** | 10.157 &plusmn; 0.852 | 118.69 &plusmn; 13.27 |
 
-| Configuration | pass@3 | pass<sup>3</sup> | Average reward | Total tokens | Wall-clock time |
-|---|:---:|:---:|:---:|:---:|:---:|
-| qwen3-32b + E5 evolved harness | **0.80** | **0.35** | **0.583** | 12.1M | 12.0 min |
+Training time (s) for the three harness self-evolution methods:
 
-For qwen3-8b, the reported E3 run completes three training rounds and the reported E5 run completes two training rounds before the final test. For qwen3-14b and qwen3-32b, the evolved E3/E5 harnesses trained with qwen3-8b are reused and evaluated with the target agent model. `pass<sup>3</sup>` denotes the proportion of tasks successful in all three trials.
-
-## qwen3-8b Training Time
-
-Training time is measured as the wall-clock interval from the start of an evolution run to creation of its final evolved-harness artifact. It includes training evaluation, failure analysis, harness synthesis, and staging updates; E5 also includes the multi-agent debate. It excludes the final test.
-
-| Method | Completed training rounds | Started | Finished | Training time |
-|---|:---:|:---:|:---:|:---:|
-| E3: Serial evolution | 3 | 2026-07-01 01:00:47 | 2026-07-01 04:50:42 | 3h 49m 56s |
-| E4: Cross-Instance Learning | 3 | 2026-07-01 09:51:34 | 2026-07-01 10:30:29 | 38m 55s |
-| E5: Cross-Instance Learning + MAD | 2 | 2026-07-01 23:50:29 | 2026-07-02 00:58:35 | 1h 08m 07s |
-
-## Code Release
-
-This release includes the Ecdysis first-party implementation:
-
-- failure extraction, trajectory compaction, cross-instance grouping, and evolved-skill artifacts;
-- E1-E5 experiment orchestration and shared pipeline utilities;
-- multi-agent debate prompts and transcript handling;
-- harness patching, replay preflight checks, and extracted runtime-harness modules;
-- evaluation, aggregation, timing, and replay-validation scripts.
-
-The release omits local YAML experiment files, secrets, generated output directories, raw traces, large benchmark data, and the full external benchmark framework. Full end-to-end evaluation expects a compatible benchmark/runtime installation and user-provided local run settings.
+| Dataset | Self-Evolution | Ecdysis (w/o MAD) | Ecdysis (w/ MAD) | Speedup |
+|---|---:|---:|---:|---:|
+| Retail | 1,831.4 | 1,292.4 | 1,405.9 | 1.42&times; / 1.30&times; |
+| Airline | 8,120.6 | 2,510.8 | 4,403.0 | **3.23&times;** / 1.84&times; |
 
 ## Repository Layout
 
@@ -85,7 +67,7 @@ src/ecdysis/
   experiment_config.py         Shared experiment defaults and command construction
   harness_patch.py             Patch application and artifact persistence
   harness_replay.py            Replay preflight for staged harness changes
-  experiments/                 E1-E5 experiment runners
+  experiments/                 Experiment runner implementations
   pipeline/                    Shared evaluation, logging, timing, and guardrail steps
   mad/                         Multi-agent debate roles and synthesis
   harness/                     Extracted runtime-harness modules
@@ -98,7 +80,7 @@ tests/                         Public-tree and core artifact tests
 Install the package in editable mode:
 
 ```bash
-pip install -e .
+pip install -e ".[dev]"
 ```
 
 Run the lightweight checks:
@@ -119,7 +101,7 @@ This project is motivated in part by [Life-Harness](https://arxiv.org/abs/2605.2
 ```bibtex
 @misc{ecdysis2026,
   title        = {Ecdysis: Efficient and Effective Training of Runtime Harnesses for LLM Agents},
-  author       = {Ruiqing Yue and Yu Cui and Xianhong Xue and Tingyu Li and Zhe Cui and Haibin Zhang and Cong Zuo},
+  author       = {Ruiqing Yue and Yu Cui and Xianhong Xue and Tingyu Li and Ting Li and Wenzhuo Zhu and Zhe Cui and Haibin Zhang and Cong Zuo},
   year         = {2026},
   howpublished = {\url{https://github.com/cuiyu-ai/Ecdysis}},
   note         = {Code repository}

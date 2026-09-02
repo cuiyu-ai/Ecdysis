@@ -1,4 +1,4 @@
-﻿"""Base types for the harness system."""
+"""Base types for the harness system."""
 
 import json
 from typing import Any, Protocol, runtime_checkable

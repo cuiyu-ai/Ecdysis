@@ -1,4 +1,4 @@
-﻿"""Airline domain harness rules and annotators.
+"""Airline domain harness rules and annotators.
 
 All rules and annotators inspect only DB state (no conversation history),
 ensuring replay safety during set_state evaluation.
@@ -69,6 +69,27 @@ update_reservation_flights
 book_reservation
   BookingPaymentAnnotator         – after a successful booking, surface total charged per
                                     instrument so agent can confirm the exact amount with user.
+
+search_direct_flight
+  DBQueryAnnotator                – signal db_queried_this_turn: True so agent knows it has
+                                    results to communicate before responding.
+
+search_onestop_flight
+  DBQueryAnnotator                – same as above for one-stop flight searches.
+
+H5 Structured DB errors
+------------------------
+Empty-list results from search_direct_flight and search_onestop_flight are
+transformed into {'status': 'no_results', 'query': <params>, 'message': ...}
+instead of []. Gives the agent a machine-readable signal that the query
+succeeded but matched nothing, with a neutral reference to the list_all_airports
+tool (no imperative hints, no inline airport data).
+
+H3 Error tracking
+------------------
+HarnessedAirlineTools.use_tool tracks per-action error counts and exposes
+get_error_breakdown() — {'total_errors': N, 'errors_by_action': {tool: count}}.
+Attached to the too_many_errors termination reason for diagnosis.
 """
 
 from datetime import timedelta
@@ -363,9 +384,8 @@ class BasicEconomyFlightChangeRule:
        cancel → rebook at the new cabin; upgrading cabin while simultaneously
        switching to different flights is not a valid operation.
 
-    The one allowed path for basic_economy: upgrade cabin while keeping the
-    EXACT SAME flight numbers (e.g. Task 7 gold: cabin basic→business,
-    same HAT005 + HAT178).
+    The one allowed path for basic_economy is a cabin upgrade that keeps the
+    exact same flight segments, such as changing basic economy to business.
     """
 
     tool_name = "update_reservation_flights"
@@ -1317,6 +1337,45 @@ class HarnessedAirlineTools(HarnessedToolKitMixin, AirlineTools):
         ],
     }
 
+    # H5: DB query tools whose empty-list results get structured error dicts.
+    _DB_QUERY_TOOLS: set[str] = {
+        "search_direct_flight",
+        "search_onestop_flight",
+    }
+
+    # H3: per-action error tracking for too_many_errors breakdown.
+    _error_counts: dict[str, int] = {}
+
+    def use_tool(self, tool_name: str, **kwargs: Any) -> Any:
+        """Override to add H5 structured DB errors and H3 error tracking."""
+        try:
+            result = super().use_tool(tool_name, **kwargs)
+        except ValueError:
+            # H3: track error before re-raising
+            self._error_counts[tool_name] = self._error_counts.get(tool_name, 0) + 1
+            raise
+
+        # H5: transform empty-list DB query results into structured error dicts
+        if tool_name in self._DB_QUERY_TOOLS and isinstance(result, list) and not result:
+            params = {k: v for k, v in kwargs.items()}
+            return {
+                "status": "no_results",
+                "query": params,
+                "message": (
+                    "No results found for the given query parameters. "
+                    "The list_all_airports tool provides available airport codes."
+                ),
+            }
+
+        return result
+
+    def get_error_breakdown(self) -> dict:
+        """H3: return per-action error counts for too_many_errors termination."""
+        return {
+            "total_errors": sum(self._error_counts.values()),
+            "errors_by_action": dict(self._error_counts),
+        }
+
 
 # ---------------------------------------------------------------------------
 # H3 variants — tool-description policy embedding
@@ -1602,6 +1661,19 @@ class BookingPaymentAnnotator:
 # ---------------------------------------------------------------------------
 
 
+class DBQueryAnnotator:
+    """H4: Signal that a database query was executed this turn.
+
+    Provides a deterministic flag the agent can use to decide whether it has
+    results to communicate. Does NOT block COMMUNICATE — only informs.
+    """
+
+    tool_name = "search_direct_flight"
+
+    def annotate(self, db: FlightDB, result: Any, **_: Any) -> str | None:
+        return "[H4] db_queried_this_turn: True"
+
+
 class H4AirlineAnnotationMixin:
     """Mixin that adds H4 post-execution tool-response annotations to airline tools.
 
@@ -1626,6 +1698,12 @@ class H4AirlineAnnotationMixin:
         ],
         "book_reservation": [
             BookingPaymentAnnotator(),
+        ],
+        "search_direct_flight": [
+            DBQueryAnnotator(),
+        ],
+        "search_onestop_flight": [
+            DBQueryAnnotator(),
         ],
     }
 
