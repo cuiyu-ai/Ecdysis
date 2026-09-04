@@ -1,4 +1,4 @@
-﻿"""Harness module: pluggable pre-execution validation for tau2 domain tools.
+"""Harness module: pluggable pre-execution validation for tau2 domain tools.
 
 A harness intercepts tool calls before they modify the database, checks policy
 rules derived from the domain's policy.md, and raises ValueError (which the

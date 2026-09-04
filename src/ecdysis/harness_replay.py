@@ -1,4 +1,4 @@
-﻿"""Message-history replay preflight for evolved harness patches.
+"""Message-history replay preflight for evolved harness patches.
 
 Some benchmark tasks ship with ``initial_state.message_history``. Before each
 episode, ``Environment.set_state`` re-executes mutating tools and compares
@@ -36,7 +36,7 @@ REPLAY_SAFETY_GUIDE = """
 ## Replay safety (mandatory)
 
 Many tasks include a pre-recorded ``message_history`` in ``initial_state``.
-At episode start ->and again during **environment reward evaluation** ->the
+At episode start — and again during **environment reward evaluation** — the
 environment re-executes mutating (WRITE) tools from trajectories and requires
 tool outputs to match recorded ToolMessages exactly.
 

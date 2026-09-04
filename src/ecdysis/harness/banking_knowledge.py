@@ -1,10 +1,10 @@
-﻿"""Banking Knowledge domain harness: H2 rules + H4 post-call annotations.
+"""Banking Knowledge domain harness: H2 rules + H4 post-call annotations.
 
 H2 rules (pre-execution, deterministic DB/state checks)
 --------------------------------------------------------
 LogVerificationUserIdRule
     Before log_verification: user_id must exist in db.users.  Catches every
-    fabricated, hallucinated, or bypass-code value before it pollutes the DB.
+    placeholder, hallucinated, or bypass-code value before it pollutes the DB.
 
 LogVerificationTimeRule (not wired — kept for reference)
     Before log_verification: time_verified must match get_current_time().
@@ -87,7 +87,7 @@ class LogVerificationUserIdRule:
     """H2: user_id passed to log_verification must exist in the users table.
 
     This is the single most impactful gate: it blocks every hallucinated,
-    fabricated, or social-engineering bypass value (e.g. 'usr_12345',
+    placeholder, or social-engineering bypass value (e.g. 'usr_12345',
     '9K2X7M4P1N8Q3R5T6A') before it writes to verification_history.
     """
 

@@ -1,4 +1,4 @@
-﻿"""Shared experiment configuration and command-building helpers.
+"""Shared experiment configuration and command-building helpers.
 
 The files in ``scripts/`` are CLI entry points.  This module holds the reusable
 pieces they share: default experiment definitions, YAML config merging,
@@ -15,8 +15,28 @@ from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+RUNTIME_ROOT = Path(
+    os.getenv("ECDYSIS_RUNTIME_ROOT", str(PROJECT_ROOT))
+).expanduser()
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 EXPERIMENTS_DIR = PROJECT_ROOT / "data" / "experiments"
+
+if str(RUNTIME_ROOT) not in sys.path:
+    sys.path.insert(0, str(RUNTIME_ROOT))
+
+
+def _load_project_env() -> None:
+    env_file = PROJECT_ROOT / ".env"
+    if env_file.exists():
+        try:
+            from dotenv import load_dotenv
+        except ModuleNotFoundError:
+            return
+
+        load_dotenv(env_file)
+
+
+_load_project_env()
 
 
 AGENT_API_BASE = os.getenv(
@@ -85,7 +105,7 @@ DEFAULT_EXPERIMENT_CONFIGS: dict[str, dict[str, Any]] = {
         "h5_top_k": 1,
         "evolution_rounds": 3,
         "evolution_mode": "cross_instance",
-        "description": "Cross-Instance Learning batch evolution",
+        "description": "Mixed Training batch evolution",
     },
     "E5": {
         "name": "debate",
@@ -98,7 +118,7 @@ DEFAULT_EXPERIMENT_CONFIGS: dict[str, dict[str, Any]] = {
         "evolution_rounds": 3,
         "evolution_mode": "cross_instance",
         "debate": True,
-        "description": "Cross-Instance Learning + MAD harness evolution (2-round multi-agent debate)",
+        "description": "Mixed Training + MAD harness evolution (2-round multi-agent debate)",
     },
 }
 
@@ -273,8 +293,11 @@ def apply_yaml_config(
         if evolution.get("enabled", False):
             if "rounds" in evolution:
                 exp_config["evolution_rounds"] = int(evolution["rounds"])
-            if evolution.get("mode"):
-                exp_config["evolution_mode"] = evolution["mode"]
+            mode = evolution.get("mode")
+            if mode:
+                # Preserve current public mode names without embedding legacy aliases.
+                normalized_mode = str(mode).strip()
+                exp_config["evolution_mode"] = normalized_mode
         else:
             exp_config.pop("evolution_rounds", None)
             exp_config.pop("evolution_mode", None)

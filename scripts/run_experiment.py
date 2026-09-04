@@ -1,7 +1,7 @@
-﻿#!/usr/bin/env python3
-"""Unified entry point for E1-E5.
+#!/usr/bin/env python3
+"""Unified entry point for E1–E5.
 
-Reads a user-supplied YAML run file, dispatches to the matching
+Reads a YAML config from ``configs/``, dispatches to the matching
 experiment module (explicit ``run()`` pipeline), and writes summaries
 under ``data/experiments/``.
 """
@@ -23,13 +23,14 @@ from ecdysis.experiment_config import (  # noqa: E402
     resolve_nl_assertions,
 )
 from ecdysis.pipeline.log import evolution_mode_summary, log_dry_run  # noqa: E402
+from ecdysis.pipeline.steps import EvolutionPaused  # noqa: E402
 from ecdysis.experiments import BaseExperiment, build_experiment, registered_experiments  # noqa: E402
 
 
 def _print_plan(exp: BaseExperiment, eval_params: dict) -> None:
     ec = exp.exp_config
     print("=" * 60)
-    print(f"Experiment: {exp.label} - {ec.get('description', '')}")
+    print(f"Experiment: {exp.label} — {ec.get('description', '')}")
     print(f"Config     : {exp.config_path}")
     print(f"Domain     : {eval_params['domain']}")
     if ec.get("evolution_rounds"):
@@ -37,11 +38,11 @@ def _print_plan(exp: BaseExperiment, eval_params: dict) -> None:
         print(f"MAD        : {'enabled' if ec.get('debate') else 'disabled'}")
         print(
             f"Splits     : train={eval_params['train_split']} "
-            f"(trials={eval_params['train_trials']}) -> "
+            f"(trials={eval_params['train_trials']}) → "
             f"test={eval_params['test_split']} (trials={eval_params['test_trials']})"
         )
     else:
-        harness = "enabled (H2-H5)" if ec.get("harness") else "disabled"
+        harness = "enabled (H2–H5)" if ec.get("harness") else "disabled"
         print(f"Harness    : {harness}")
         print(f"Split      : {eval_params['split']} (trials={eval_params['trials']})")
     print("=" * 60)
@@ -52,7 +53,7 @@ def main() -> int:
     parser.add_argument(
         "--config",
         required=True,
-        help="Path to a user-supplied YAML run file",
+        help="Path to the YAML config (e.g. configs/E3_original_evolution.yaml)",
     )
     parser.add_argument("--domain", choices=["airline", "retail"], help="Override domain")
     parser.add_argument("--num-tasks", type=int, help="Limit number of tasks (for smoke tests)")
@@ -63,6 +64,14 @@ def main() -> int:
         "--dry-run",
         action="store_true",
         help="Print the planned commands without running any eval or LLM call",
+    )
+    parser.add_argument(
+        "--stop-after-evolution-round",
+        type=int,
+        help=(
+            "Pause successfully after persisting the selected evolution round; "
+            "rerun without this option (or with a larger round) to resume"
+        ),
     )
     args = parser.parse_args()
 
@@ -80,6 +89,16 @@ def main() -> int:
         exp.exp_config["evolution_rounds"] = args.rounds
         if "evolution" in exp.eval_config:
             exp.eval_config["evolution"]["rounds"] = args.rounds
+    if args.stop_after_evolution_round is not None:
+        configured_rounds = int(exp.exp_config.get("evolution_rounds") or 0)
+        if not 1 <= args.stop_after_evolution_round <= configured_rounds:
+            parser.error(
+                "--stop-after-evolution-round must be between 1 and "
+                f"{configured_rounds}"
+            )
+        exp.eval_config["stop_after_evolution_round"] = (
+            args.stop_after_evolution_round
+        )
 
     eval_params = exp._resolve_eval_params()
     print(
@@ -96,7 +115,12 @@ def main() -> int:
         )
 
     started = datetime.now()
-    result = exp.run()
+    try:
+        result = exp.run()
+    except EvolutionPaused as exc:
+        elapsed = (datetime.now() - started).total_seconds()
+        print(f"\n[{exp.label}] paused safely in {elapsed:.1f}s: {exc}")
+        return 0
     elapsed = (datetime.now() - started).total_seconds()
     print(f"\n[{exp.label}] done in {elapsed:.1f}s")
     timing = (result.extra or {}).get("timing")

@@ -1,15 +1,19 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Subprocess entry: replay preflight for the live ``tau2/harness`` tree."""
 
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _SRC_DIR = _PROJECT_ROOT / "src"
-for _path in (_PROJECT_ROOT, _SRC_DIR):
+_RUNTIME_ROOT = Path(
+    os.getenv("ECDYSIS_RUNTIME_ROOT", str(_PROJECT_ROOT))
+).expanduser()
+for _path in (_RUNTIME_ROOT, _PROJECT_ROOT, _SRC_DIR):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 

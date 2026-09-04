@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Model list for Ecdysis experiments.
 
 Qwen series + DeepSeek distilled models (4B-72B) for generalization experiments.

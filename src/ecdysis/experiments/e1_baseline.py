@@ -1,4 +1,4 @@
-﻿"""E1: no-harness baseline. Single eval on the configured split."""
+"""E1: no-harness baseline. Single eval on the configured split."""
 
 from __future__ import annotations
 

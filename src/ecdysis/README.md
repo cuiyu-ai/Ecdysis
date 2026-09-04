@@ -6,12 +6,12 @@
 
 | Path | Purpose |
 |---|---|
-| `evolution.py` | Failure extraction, cross-instance grouping, OpenCode staging, and E3/E4/E5 analysis helpers |
+| `evolution.py` | Failure extraction, mixed-training grouping, OpenCode staging, and evolution analysis helpers |
 | `artifacts.py` | Versioned evolved-skill artifacts |
 | `harness_patch.py` | Harness patch representation, application, and persistence |
 | `harness_replay.py` | Replay preflight checks for staged harness changes |
 | `experiment_config.py` | Shared experiment defaults and command-building helpers |
-| `experiments/` | E1-E5 experiment runner classes |
+| `experiments/` | Experiment runner classes |
 | `pipeline/` | Shared evaluation, logging, timing, persistence, and guardrail steps |
 | `mad/` | Multi-agent debate roles and moderator synthesis |
 | `harness/` | Extracted runtime-harness modules |

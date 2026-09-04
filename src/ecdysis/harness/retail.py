@@ -1,4 +1,4 @@
-﻿"""Retail domain harness rules and annotators.
+"""Retail domain harness rules and annotators.
 
 All rules and annotators inspect only DB state (no conversation history),
 ensuring replay safety during set_state evaluation.

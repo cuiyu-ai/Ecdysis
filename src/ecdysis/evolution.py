@@ -1,4 +1,4 @@
-﻿"""Harness evolution helpers for E3/E4.
+"""Harness evolution helpers for E3/E4.
 
 Deterministic helpers (failure extraction, coarse grouping) live next
 to the LLM-driven analyzers that produce H5 skills and H2/H3/H4
@@ -10,8 +10,10 @@ iterate on harness code with file tools.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
 import shutil
 import subprocess
 import tempfile
@@ -26,7 +28,9 @@ from ecdysis.harness_replay import REPLAY_SAFETY_GUIDE, validate_staging_harness
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DESIGN_GUIDE_PATH = PROJECT_ROOT / "harness_design_guide.md"
+RUNTIME_ROOT = Path(os.getenv("ECDYSIS_RUNTIME_ROOT", str(PROJECT_ROOT))).expanduser()
+HARNESS_DIR = RUNTIME_ROOT / "tau2" / "harness"
+DESIGN_GUIDE_ENV = "ECDYSIS_HARNESS_DESIGN_GUIDE"
 
 
 def _load_results(results: dict | str | Path) -> dict:
@@ -212,7 +216,7 @@ def _format_trajectory_compact(trajectory: dict[str, Any]) -> str:
 
 
 def _read_harness_dir() -> Path:
-    return PROJECT_ROOT / "tau2" / "harness"
+    return HARNESS_DIR
 
 
 def _copy_harness_tree(source_dir: Path, dest_dir: Path) -> None:
@@ -225,18 +229,30 @@ def _copy_harness_tree(source_dir: Path, dest_dir: Path) -> None:
 class _OpenCodeWorkspace:
     """Temporary harness copy so OpenCode never edits ``tau2/harness`` in place."""
 
-    def __init__(self, source_dir: Path) -> None:
+    def __init__(
+        self,
+        source_dir: Path,
+        *,
+        persistent_dir: Path | None = None,
+    ) -> None:
+        if persistent_dir is not None:
+            self._tmpdir = None
+            self.path = persistent_dir
+            if not self.path.exists() or not any(self.path.glob("*.py")):
+                _copy_harness_tree(source_dir, self.path)
+            return
         staging_root = PROJECT_ROOT / "data" / "evolved_harness"
         staging_root.mkdir(parents=True, exist_ok=True)
         self._tmpdir = tempfile.TemporaryDirectory(
-            prefix="Ecdysis-opencode-",
+            prefix="ecdysis-opencode-",
             dir=staging_root,
         )
         self.path = Path(self._tmpdir.name)
         _copy_harness_tree(source_dir, self.path)
 
     def close(self) -> None:
-        self._tmpdir.cleanup()
+        if self._tmpdir is not None:
+            self._tmpdir.cleanup()
 
     def __enter__(self) -> Path:
         return self.path
@@ -250,6 +266,37 @@ def _snapshot_harness_files(harness_dir: Path) -> dict[str, str]:
     for f in harness_dir.glob("*.py"):
         snapshot[f.name] = f.read_text()
     return snapshot
+
+
+def _harness_fingerprint(snapshot: dict[str, str]) -> str:
+    payload = json.dumps(snapshot, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _restore_harness_snapshot(
+    snapshot: dict[str, str], harness_dir: Path
+) -> None:
+    """Restore only the isolated OpenCode workspace after a failed call."""
+    for path in harness_dir.glob("*.py"):
+        if path.name not in snapshot:
+            path.unlink()
+    for name, content in snapshot.items():
+        (harness_dir / name).write_text(content)
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pending = path.with_suffix(path.suffix + ".tmp")
+    pending.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    pending.replace(path)
+
+
+def _failure_checkpoint_key(failure: dict[str, Any]) -> str:
+    payload = json.dumps(failure, sort_keys=True, default=str)
+    digest = hashlib.sha256(payload.encode()).hexdigest()[:12]
+    task_id = str(failure.get("task_id", "unknown")).replace("/", "_")
+    trial = str(failure.get("trial", "unknown")).replace("/", "_")
+    return f"task_{task_id}_trial_{trial}_{digest}"
 
 
 def _diff_harness_files(
@@ -285,8 +332,14 @@ def _load_agent_skills(work_dir: Path) -> list[dict[str, Any]]:
 
 
 def _load_design_guide() -> str:
-    if DESIGN_GUIDE_PATH.exists():
-        return DESIGN_GUIDE_PATH.read_text()
+    configured_path = os.environ.get(DESIGN_GUIDE_ENV, "").strip()
+    if configured_path:
+        path = Path(configured_path).expanduser()
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"Design guide configured by {DESIGN_GUIDE_ENV} does not exist: {path}"
+            )
+        return path.read_text()
     return ""
 
 
@@ -295,7 +348,7 @@ def _format_groups_for_prompt(
     *,
     max_tasks_per_group: int = 8,
 ) -> str:
-    """Render failure groups as a compact cross-task summary for the Cross-Instance Learning prompt.
+    """Render failure groups as a compact cross-task summary for the Mixed Training prompt.
 
     Sorted by number of distinct task ids so cross-task clusters surface first.
     """
@@ -314,7 +367,7 @@ def _format_groups_for_prompt(
         shown = unique_tasks[:max_tasks_per_group]
         suffix = "..." if len(unique_tasks) > max_tasks_per_group else ""
         lines.append(
-            f"- `{key}` ->{len(members)} failures across {task_count} distinct "
+            f"- `{key}` — {len(members)} failures across {task_count} distinct "
             f"tasks (sample termination={sample_term}, sample "
             f"breakdown={sample_breakdown}); task_ids={shown}{suffix}"
         )
@@ -376,7 +429,7 @@ def _build_agent_prompt(
         grouping_section = (
             "## Cross-Task Failure Grouping\n"
             "Failures have been clustered by "
-            "`(termination_reason, failed_reward_basis)`. Groups containing -> "
+            "`(termination_reason, failed_reward_basis)`. Groups containing ≥2 "
             "distinct task IDs are cross-task patterns and should be the primary "
             "unit of generalization. Design harness updates that fix the cluster, "
             "not the individual case.\n\n"
@@ -398,7 +451,10 @@ def _build_agent_prompt(
         task_framing = (
             "Analyze each failure in isolation. Propose targeted harness "
             "updates that fix this specific failure mode; do not generalize "
-            "to other tasks."
+            "to other tasks. Inspect only the primary domain harness and its "
+            "direct dependencies. Implement at most one minimal targeted "
+            "change, run no more than two narrow checks, and finish once that "
+            "change is verified. Do not perform broad repository exploration."
         )
 
     domain_hint = ""
@@ -452,6 +508,7 @@ def _call_opencode(
     timeout: int = 600,
     max_retries: int = 3,
     backoff: float = 10.0,
+    audit_events: list[dict[str, Any]] | None = None,
 ) -> str:
     """Call OpenCode CLI to run the coding agent. Retries on transient
     failures (non-zero exit, subprocess.TimeoutExpired) with linear
@@ -467,6 +524,7 @@ def _call_opencode(
     ]
     last_exc: Exception | None = None
     for attempt in range(1, max_retries + 1):
+        attempt_started = time.monotonic()
         try:
             result = subprocess.run(
                 cmd,
@@ -476,14 +534,45 @@ def _call_opencode(
                 cwd=str(work_dir),
             )
             if result.returncode == 0:
+                if audit_events is not None:
+                    audit_events.append({
+                        "model": model,
+                        "attempt": attempt,
+                        "duration_seconds": round(
+                            time.monotonic() - attempt_started, 3
+                        ),
+                        "success": True,
+                    })
                 return result.stdout
             last_exc = RuntimeError(
                 f"OpenCode CLI failed (exit {result.returncode}):\n"
                 f"stdout: {result.stdout[-2000:]}\n"
                 f"stderr: {result.stderr[-2000:]}"
             )
+            if audit_events is not None:
+                audit_events.append({
+                    "model": model,
+                    "attempt": attempt,
+                    "duration_seconds": round(
+                        time.monotonic() - attempt_started, 3
+                    ),
+                    "success": False,
+                    "error_type": "nonzero_exit",
+                    "returncode": result.returncode,
+                })
         except subprocess.TimeoutExpired as exc:
             last_exc = exc
+            if audit_events is not None:
+                audit_events.append({
+                    "model": model,
+                    "attempt": attempt,
+                    "duration_seconds": round(
+                        time.monotonic() - attempt_started, 3
+                    ),
+                    "success": False,
+                    "error_type": "timeout",
+                    "timeout_seconds": timeout,
+                })
         if attempt >= max_retries:
             break
         logger.warning(
@@ -496,26 +585,147 @@ def _call_opencode(
     )
 
 
+def _summarize_opencode_events(events: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "calls_completed": sum(1 for event in events if event.get("success")),
+        "calls_failed": sum(1 for event in events if not event.get("success")),
+        "timeouts": sum(
+            1 for event in events if event.get("error_type") == "timeout"
+        ),
+        "attempts": sum(
+            int(event["attempts"])
+            if event.get("attempts") is not None
+            else 1
+            for event in events
+        ),
+        "duration_seconds": round(
+            sum(float(event.get("duration_seconds") or 0) for event in events), 3
+        ),
+    }
+
 def _run_opencode_analysis(
     *,
     prompt: str,
     source_harness_dir: Path,
     model: str,
     domain: str | None = None,
+    checkpoint_dir: Path | None = None,
+    timeout: int = 600,
+    max_retries: int = 1,
 ) -> dict[str, Any]:
-    """Run OpenCode in an isolated copy of the current harness tree."""
-    with _OpenCodeWorkspace(source_harness_dir) as workspace:
-        before = _snapshot_harness_files(workspace)
-        _call_opencode(prompt, workspace, model=model)
+    """Run one OpenCode stage with an optional durable batch checkpoint."""
+    source_snapshot = _snapshot_harness_files(source_harness_dir)
+    source_fingerprint = _harness_fingerprint(source_snapshot)
+    prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()
+    manifest_path = checkpoint_dir / "manifest.json" if checkpoint_dir else None
+    workspace_dir = checkpoint_dir / "workspace" if checkpoint_dir else None
+    manifest: dict[str, Any] = {
+        "version": 1,
+        "status": "pending",
+        "domain": domain,
+        "model": model,
+        "source_fingerprint": source_fingerprint,
+        "prompt_hash": prompt_hash,
+        "skills": [],
+        "audit_events": [],
+    }
+    if manifest_path and manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text())
+        expected = {
+            "domain": domain,
+            "model": model,
+            "source_fingerprint": source_fingerprint,
+            "prompt_hash": prompt_hash,
+        }
+        mismatches = [
+            key for key, value in expected.items() if manifest.get(key) != value
+        ]
+        if mismatches:
+            raise RuntimeError(
+                "Batch evolution checkpoint mismatch for "
+                f"{mismatches}: {checkpoint_dir}"
+            )
+        if manifest.get("status") == "completed":
+            if not workspace_dir or not workspace_dir.is_dir():
+                raise RuntimeError(
+                    f"Completed batch workspace is missing: {workspace_dir}"
+                )
+            actual_workspace = _harness_fingerprint(
+                _snapshot_harness_files(workspace_dir)
+            )
+            if manifest.get("workspace_fingerprint") != actual_workspace:
+                raise RuntimeError(
+                    "Completed batch workspace fingerprint mismatch: "
+                    f"{workspace_dir}"
+                )
+    elif workspace_dir and workspace_dir.exists() and any(workspace_dir.glob("*.py")):
+        raise RuntimeError(
+            "Batch checkpoint workspace exists without a manifest: "
+            f"{workspace_dir}"
+        )
+
+    audit_events: list[dict[str, Any]] = list(manifest.get("audit_events") or [])
+    with _OpenCodeWorkspace(
+        source_harness_dir, persistent_dir=workspace_dir
+    ) as workspace:
+        before = source_snapshot
+        if manifest_path and not manifest_path.exists():
+            _write_json_atomic(manifest_path, manifest)
+        if manifest.get("status") != "completed":
+            manifest["status"] = "running"
+            manifest.pop("error", None)
+            if manifest_path:
+                _write_json_atomic(manifest_path, manifest)
+            try:
+                _call_opencode(
+                    prompt,
+                    workspace,
+                    model=model,
+                    timeout=timeout,
+                    max_retries=max_retries,
+                    audit_events=audit_events,
+                )
+            except Exception as exc:
+                failed_dir = checkpoint_dir / "failed_attempt" if checkpoint_dir else None
+                if failed_dir is not None:
+                    failed_dir.mkdir(parents=True, exist_ok=True)
+                    _copy_harness_tree(workspace, failed_dir)
+                    (failed_dir / "error.txt").write_text(str(exc))
+                _restore_harness_snapshot(before, workspace)
+                skills_file = workspace / "evolved_skills.json"
+                if skills_file.exists():
+                    skills_file.unlink()
+                manifest["status"] = "interrupted"
+                manifest["error"] = {
+                    "type": type(exc).__name__,
+                    "message": str(exc)[:2000],
+                }
+                manifest["audit_events"] = audit_events
+                if manifest_path:
+                    _write_json_atomic(manifest_path, manifest)
+                raise
+            manifest["skills"] = _load_agent_skills(workspace)
+            skills_file = workspace / "evolved_skills.json"
+            if skills_file.exists():
+                skills_file.unlink()
+            manifest["audit_events"] = audit_events
+            manifest["status"] = "completed"
+            manifest["workspace_fingerprint"] = _harness_fingerprint(
+                _snapshot_harness_files(workspace)
+            )
+            if manifest_path:
+                _write_json_atomic(manifest_path, manifest)
         changes = _diff_harness_files(before, workspace)
         changes = _filter_replay_safe_changes(
             changes, domain=domain, staging_dir=workspace
         )
-        skills = _load_agent_skills(workspace)
-        skills_file = workspace / "evolved_skills.json"
-        if skills_file.exists():
-            skills_file.unlink()
-    return {"skills": skills, "code_changes": changes}
+    return {
+        "skills": list(manifest.get("skills") or []),
+        "code_changes": changes,
+        "opencode_usage": _summarize_opencode_events(audit_events),
+        "checkpoint_dir": str(checkpoint_dir) if checkpoint_dir else None,
+        "checkpoint_status": "completed",
+    }
 
 
 def analyze_failures_serial(
@@ -524,36 +734,231 @@ def analyze_failures_serial(
     agent_model: str | None = None,
     all_trajectories: list[dict[str, Any]] | None = None,
     domain: str | None = None,
+    checkpoint_dir: Path | None = None,
+    timeout: int = 600,
+    max_retries: int = 1,
+    context_scope: str = "failure_only",
 ) -> dict[str, Any]:
-    """E3-style serial analysis. One OpenCode CLI call per failure."""
+    """E3-style serial analysis with a durable checkpoint per failure.
+
+    Each call receives only its own failed trajectory. A failed or timed-out
+    call is archived and rolled back without discarding successful calls from
+    the same round. The 600-second wall-clock limit remains the default.
+    """
     if not failures:
         return {"skills": [], "code_changes": []}
     live_harness = _read_harness_dir()
     model = agent_model or "dashscope/deepseek-v4-pro"
+    timeout_overrides_raw = os.environ.get(
+        "ECDYSIS_EVOLUTION_TIMEOUT_OVERRIDES_JSON", ""
+    ).strip()
+    timeout_overrides: dict[str, int] = {}
+    timeout_override_spec = os.environ.get(
+        "ECDYSIS_EVOLUTION_TIMEOUT_OVERRIDE", ""
+    ).strip()
+    if timeout_override_spec:
+        failure_key, separator, override_seconds_raw = (
+            timeout_override_spec.rpartition("=")
+        )
+        if (
+            not separator
+            or not failure_key
+            or not override_seconds_raw.isdigit()
+            or int(override_seconds_raw) <= 0
+        ):
+            raise ValueError(
+                "ECDYSIS_EVOLUTION_TIMEOUT_OVERRIDE must have the form "
+                "failure_key=positive_integer_seconds"
+            )
+        timeout_overrides[failure_key] = int(override_seconds_raw)
+    if timeout_overrides_raw:
+        try:
+            parsed_timeout_overrides = json.loads(timeout_overrides_raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                "ECDYSIS_EVOLUTION_TIMEOUT_OVERRIDES_JSON must be valid JSON"
+            ) from exc
+        if not isinstance(parsed_timeout_overrides, dict):
+            raise ValueError(
+                "ECDYSIS_EVOLUTION_TIMEOUT_OVERRIDES_JSON must be a JSON object"
+            )
+        for failure_key, override_seconds in parsed_timeout_overrides.items():
+            if (
+                not isinstance(failure_key, str)
+                or isinstance(override_seconds, bool)
+                or not isinstance(override_seconds, int)
+                or override_seconds <= 0
+            ):
+                raise ValueError(
+                    "Evolution timeout overrides must map failure-key strings "
+                    "to positive integer seconds"
+                )
+            timeout_overrides[failure_key] = override_seconds
+    if context_scope not in {"failure_only", "all"}:
+        raise ValueError(
+            "serial context_scope must be 'failure_only' or 'all'"
+        )
     trajectories = all_trajectories or failures
 
-    all_skills: list[dict[str, Any]] = []
-    with _OpenCodeWorkspace(live_harness) as workspace:
-        initial = _snapshot_harness_files(workspace)
+    source_snapshot = _snapshot_harness_files(live_harness)
+    source_fingerprint = _harness_fingerprint(source_snapshot)
+    manifest_path = checkpoint_dir / "manifest.json" if checkpoint_dir else None
+    workspace_dir = checkpoint_dir / "workspace" if checkpoint_dir else None
+    manifest: dict[str, Any] = {
+        "version": 1,
+        "domain": domain,
+        "model": model,
+        "context_scope": context_scope,
+        "source_fingerprint": source_fingerprint,
+        "completed": [],
+        "failed_attempts": [],
+        "skills": [],
+        "audit_events": [],
+    }
+    if manifest_path and manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text())
+        expected = manifest.get("source_fingerprint")
+        if expected != source_fingerprint:
+            raise RuntimeError(
+                "Serial evolution checkpoint does not match the current "
+                f"harness baseline: {checkpoint_dir}"
+            )
+        if (
+            manifest.get("domain") != domain
+            or manifest.get("model") != model
+            or manifest.get("context_scope") != context_scope
+        ):
+            raise RuntimeError(
+                "Serial evolution checkpoint domain/model mismatch: "
+                f"{checkpoint_dir}"
+            )
+        if manifest.get("completed"):
+            if not workspace_dir or not workspace_dir.is_dir():
+                raise RuntimeError(
+                    f"Serial checkpoint workspace is missing: {workspace_dir}"
+                )
+            actual_workspace = _harness_fingerprint(
+                _snapshot_harness_files(workspace_dir)
+            )
+            if manifest.get("workspace_fingerprint") != actual_workspace:
+                raise RuntimeError(
+                    "Serial checkpoint workspace fingerprint mismatch: "
+                    f"{workspace_dir}"
+                )
+    elif workspace_dir and workspace_dir.exists() and any(workspace_dir.glob("*.py")):
+        raise RuntimeError(
+            "Checkpoint workspace exists without a manifest; preserve and "
+            f"inspect it before continuing: {workspace_dir}"
+        )
+
+    completed = set(manifest.get("completed") or [])
+    all_skills: list[dict[str, Any]] = list(manifest.get("skills") or [])
+    audit_events: list[dict[str, Any]] = list(manifest.get("audit_events") or [])
+    failures_this_run: list[dict[str, Any]] = []
+    if timeout_overrides:
+        manifest["runtime_timeout_overrides"] = timeout_overrides
+
+    with _OpenCodeWorkspace(
+        live_harness, persistent_dir=workspace_dir
+    ) as workspace:
+        initial = source_snapshot
+        if manifest_path and not manifest_path.exists():
+            _write_json_atomic(manifest_path, manifest)
         for failure in failures:
+            failure_key = _failure_checkpoint_key(failure)
+            if failure_key in completed:
+                logger.info("Reusing serial evolution checkpoint: %s", failure_key)
+                continue
+            failure_timeout = timeout_overrides.get(failure_key, timeout)
+            before_failure = _snapshot_harness_files(workspace)
             prompt = _build_agent_prompt(
-                trajectories,
+                [failure] if context_scope == "failure_only" else trajectories,
                 [failure],
                 mode="original",
                 harness_dir=workspace,
                 domain=domain,
             )
-            _call_opencode(prompt, workspace, model=model)
-            all_skills.extend(_load_agent_skills(workspace))
-            skills_file = workspace / "evolved_skills.json"
-            if skills_file.exists():
-                skills_file.unlink()
+            event_start = len(audit_events)
+            try:
+                _call_opencode(
+                    prompt,
+                    workspace,
+                    model=model,
+                    timeout=failure_timeout,
+                    max_retries=max_retries,
+                    audit_events=audit_events,
+                )
+                for event in audit_events[event_start:]:
+                    event["failure_key"] = failure_key
+                all_skills.extend(_load_agent_skills(workspace))
+                skills_file = workspace / "evolved_skills.json"
+                if skills_file.exists():
+                    skills_file.unlink()
+                completed.add(failure_key)
+                manifest["completed"] = sorted(completed)
+            except Exception as exc:
+                for event in audit_events[event_start:]:
+                    event["failure_key"] = failure_key
+                failed_root = (
+                    checkpoint_dir / "failed_attempts" / failure_key
+                    if checkpoint_dir
+                    else None
+                )
+                if failed_root is not None:
+                    failed_root.mkdir(parents=True, exist_ok=True)
+                    _copy_harness_tree(workspace, failed_root)
+                    (failed_root / "error.txt").write_text(str(exc))
+                _restore_harness_snapshot(before_failure, workspace)
+                skills_file = workspace / "evolved_skills.json"
+                if skills_file.exists():
+                    skills_file.unlink()
+                failure_record = {
+                    "failure_key": failure_key,
+                    "task_id": failure.get("task_id"),
+                    "trial": failure.get("trial"),
+                    "error_type": type(exc).__name__,
+                    "error": str(exc)[:2000],
+                }
+                failures_this_run.append(failure_record)
+                manifest.setdefault("failed_attempts", []).append(failure_record)
+                logger.warning(
+                    "Serial OpenCode failure isolated at %s: %s",
+                    failure_key,
+                    exc,
+                )
+            manifest["skills"] = all_skills
+            manifest["audit_events"] = audit_events
+            manifest["workspace_fingerprint"] = _harness_fingerprint(
+                _snapshot_harness_files(workspace)
+            )
+            if manifest_path:
+                _write_json_atomic(manifest_path, manifest)
         changes = _diff_harness_files(initial, workspace)
         changes = _filter_replay_safe_changes(
             changes, domain=domain, staging_dir=workspace
         )
 
-    return {"skills": all_skills, "code_changes": changes}
+    requested_keys = {_failure_checkpoint_key(failure) for failure in failures}
+    unresolved = sorted(requested_keys - completed)
+    manifest["status"] = "incomplete" if unresolved else "completed"
+    manifest["unresolved"] = unresolved
+    if manifest_path:
+        _write_json_atomic(manifest_path, manifest)
+    if unresolved:
+        raise RuntimeError(
+            "Serial evolution round is incomplete; resume from checkpoint. "
+            f"Unresolved nodes: {unresolved}"
+        )
+
+    return {
+        "skills": all_skills,
+        "code_changes": changes,
+        "opencode_usage": _summarize_opencode_events(audit_events),
+        "opencode_failures": failures_this_run,
+        "checkpoint_dir": str(checkpoint_dir) if checkpoint_dir else None,
+        "completed_failure_keys": sorted(completed),
+        "checkpoint_status": "completed",
+    }
 
 
 def analyze_failures_batched(
@@ -562,6 +967,9 @@ def analyze_failures_batched(
     agent_model: str | None = None,
     all_trajectories: list[dict[str, Any]] | None = None,
     domain: str | None = None,
+    checkpoint_dir: Path | None = None,
+    timeout: int = 600,
+    max_retries: int = 1,
 ) -> dict[str, Any]:
     """E4-style batched analysis. Single OpenCode CLI call over all grouped failures."""
     if not failures:
@@ -569,6 +977,16 @@ def analyze_failures_batched(
     live_harness = _read_harness_dir()
     model = agent_model or "dashscope/deepseek-v4-pro"
     trajectories = all_trajectories or failures
+    timeout_override_raw = os.environ.get(
+        "ECDYSIS_BATCH_EVOLUTION_TIMEOUT_OVERRIDE_SECONDS", ""
+    ).strip()
+    if timeout_override_raw:
+        if not timeout_override_raw.isdigit() or int(timeout_override_raw) <= 0:
+            raise ValueError(
+                "ECDYSIS_BATCH_EVOLUTION_TIMEOUT_OVERRIDE_SECONDS must be "
+                "a positive integer"
+            )
+        timeout = int(timeout_override_raw)
 
     prompt = _build_agent_prompt(
         trajectories,
@@ -582,6 +1000,9 @@ def analyze_failures_batched(
         source_harness_dir=live_harness,
         model=model,
         domain=domain,
+        checkpoint_dir=checkpoint_dir,
+        timeout=timeout,
+        max_retries=max_retries,
     )
 
 
@@ -594,8 +1015,11 @@ def analyze_failures_mad_batched(
     domain: str | None = None,
     artifact_dir: Path | None = None,
     round_num: int = 1,
+    checkpoint_dir: Path | None = None,
+    timeout: int = 600,
+    max_retries: int = 1,
 ) -> dict[str, Any]:
-    """E5: Cross-Instance Learning clustering -> 2-round MAD -> OpenCode staging."""
+    """E5: Mixed Training clustering → 2-round MAD → OpenCode staging."""
     if not failures:
         return {"skills": [], "code_changes": [], "mad": None}
 
@@ -607,7 +1031,13 @@ def analyze_failures_mad_batched(
 
     groups = group_failures_by_pattern(failures)
     mad_result = run_harness_mad(
-        failures, groups, client=mad_client, domain=domain
+        failures,
+        groups,
+        client=mad_client,
+        domain=domain,
+        checkpoint_path=(
+            checkpoint_dir / "mad.json" if checkpoint_dir else None
+        ),
     )
     if artifact_dir is not None:
         save_mad_transcript(
@@ -633,6 +1063,11 @@ def analyze_failures_mad_batched(
         source_harness_dir=live_harness,
         model=model,
         domain=domain,
+        checkpoint_dir=(
+            checkpoint_dir / "opencode" if checkpoint_dir else None
+        ),
+        timeout=timeout,
+        max_retries=max_retries,
     )
     opencode_out["mad"] = mad_result
     return opencode_out
@@ -648,7 +1083,7 @@ def check_convergence(
     Requires at least ``window`` rounds of history. Returns True when the
     *maximum* pass@k improvement observed in the last ``window`` rounds is
     below ``threshold``. Using the max (not the last delta) avoids being
-    fooled by single-round noise ->only a sustained plateau triggers a
+    fooled by single-round noise — only a sustained plateau triggers a
     stop.
     """
     if len(round_records) < window:

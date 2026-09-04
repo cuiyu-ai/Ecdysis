@@ -1,4 +1,4 @@
-﻿"""E2: frozen harness (H2+H3+H4+H5), no evolution. Single eval."""
+"""E2: frozen harness (H2+H3+H4+H5), no evolution. Single eval."""
 
 from __future__ import annotations
 

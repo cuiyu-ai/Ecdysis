@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Batch experiment runner for Ecdysis.
 
 Runs experiments across multiple models and collects results.
@@ -58,7 +58,7 @@ def run_single_eval(
     if config.get("evolution_rounds"):
         raise ValueError(
             f"{exp_name} is a multi-stage evolution experiment; use "
-            "scripts/run_experiment.py --config <local-run-file>.yaml instead."
+            "scripts/run_experiment.py --config configs/<exp>.yaml instead."
         )
     config.update(
         {
@@ -145,7 +145,7 @@ def run_single_eval(
     result_file = exp_dir / f"{model_name}_{timestamp}.json"
     result_file.write_text(json.dumps(structured_result, indent=2))
 
-    print(f"  ->{model_name}: pass@1={summary.get('pass@k', 'N/A')}, time={elapsed:.0f}s")
+    print(f"  ✓ {model_name}: pass@1={summary.get('pass@k', 'N/A')}, time={elapsed:.0f}s")
 
     return structured_result
 
@@ -211,7 +211,7 @@ def save_batch_summary(all_results: dict, output_file: Path):
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
     output_file.write_text(json.dumps(summary, indent=2))
-    print(f"\n  Summary saved ->{output_file}")
+    print(f"\n  Summary saved → {output_file}")
 
 
 def main():
@@ -289,7 +289,7 @@ def main():
                 print(f"{'N/A':>10}", end="")
         print()
 
-    print(f"\n  ->Batch complete")
+    print(f"\n  ✓ Batch complete")
 
 
 if __name__ == "__main__":

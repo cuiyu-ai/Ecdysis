@@ -1,7 +1,8 @@
-﻿"""Two-round multi-agent debate ->harness patch specification."""
+"""Two-round multi-agent debate → harness patch specification."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,13 @@ from .roles import (
 )
 
 MAD_ROUNDS = 2
+
+
+def _write_checkpoint(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pending = path.with_suffix(path.suffix + ".tmp")
+    pending.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    pending.replace(path)
 
 
 def _format_failure_context(
@@ -86,7 +94,7 @@ def _role_messages(
             "Summarize agreements, disputes, and what the Analyst should fix "
             "next round."
             if not is_final_round
-            else "No action ->moderator follows."
+            else "No action — moderator follows."
         )
     else:
         task = (
@@ -129,21 +137,66 @@ def run_harness_mad(
     *,
     client: LLMClient,
     domain: str | None = None,
+    checkpoint_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Run 2-round MAD (Analyst ->Critic ->Engineer) × 2, then Moderator JSON."""
+    """Run 2-round MAD (Analyst → Critic → Engineer) × 2, then Moderator JSON."""
+    usage_start = client.usage_event_count() if hasattr(client, "usage_event_count") else None
     if not failures:
         return {
             "transcript": [],
             "spec": _parse_moderator_spec(None),
             "rounds": MAD_ROUNDS,
+            "usage": client.usage_summary(start_index=usage_start) if usage_start is not None else None,
         }
 
     context = _format_failure_context(failures, groups, domain=domain)
-    transcript: list[dict[str, str]] = []
+    context_hash = hashlib.sha256(context.encode()).hexdigest()
+    model = str(getattr(client, "model", ""))
+    state: dict[str, Any] = {
+        "version": 1,
+        "status": "pending",
+        "context_hash": context_hash,
+        "model": model,
+        "next_turn_index": 0,
+        "transcript": [],
+        "usage_segments": [],
+    }
+    if checkpoint_path and checkpoint_path.exists():
+        state = json.loads(checkpoint_path.read_text())
+        if state.get("context_hash") != context_hash or state.get("model") != model:
+            raise RuntimeError(
+                f"MAD checkpoint input/model mismatch: {checkpoint_path}"
+            )
+        if state.get("status") == "completed":
+            return {
+                "transcript": list(state.get("transcript") or []),
+                "spec": _parse_moderator_spec(state.get("spec")),
+                "rounds": MAD_ROUNDS,
+                "usage": state.get("usage"),
+                "usage_segments": list(state.get("usage_segments") or []),
+                "checkpoint_status": "completed",
+            }
 
-    for round_num in range(1, MAD_ROUNDS + 1):
+    transcript: list[dict[str, str]] = list(state.get("transcript") or [])
+    turn_plan = [
+        (round_num, role)
+        for round_num in range(1, MAD_ROUNDS + 1)
+        for role in MAD_ROLES
+    ]
+    next_turn = int(state.get("next_turn_index") or 0)
+
+    for turn_index in range(next_turn, len(turn_plan)):
+        round_num, role = turn_plan[turn_index]
         is_final = round_num == MAD_ROUNDS
-        for role in MAD_ROLES:
+        state["status"] = "running"
+        state["active_turn"] = {
+            "index": turn_index,
+            "round": round_num,
+            "role": role,
+        }
+        if checkpoint_path:
+            _write_checkpoint(checkpoint_path, state)
+        try:
             messages = _role_messages(
                 role,
                 context,
@@ -151,24 +204,94 @@ def run_harness_mad(
                 round_num=round_num,
                 is_final_round=is_final,
             )
+            usage_before = (
+                client.usage_event_count()
+                if hasattr(client, "usage_event_count")
+                else None
+            )
             reply = client.chat(messages, temperature=0.3)
             _append_turn(transcript, role, reply)
+            if usage_before is not None:
+                state.setdefault("usage_segments", []).append(
+                    client.usage_summary(start_index=usage_before)
+                )
+        except Exception as exc:
+            state["status"] = "interrupted"
+            state["error"] = {
+                "type": type(exc).__name__,
+                "message": str(exc)[:2000],
+            }
+            state["transcript"] = transcript
+            if checkpoint_path:
+                _write_checkpoint(checkpoint_path, state)
+            raise
+        state["transcript"] = transcript
+        state["next_turn_index"] = turn_index + 1
+        state.pop("error", None)
+        if checkpoint_path:
+            _write_checkpoint(checkpoint_path, state)
 
-    mod_messages = _role_messages(
-        ROLE_MODERATOR,
-        context,
-        transcript,
-        round_num=MAD_ROUNDS,
-        is_final_round=True,
-    )
-    spec = _parse_moderator_spec(client.chat_json(mod_messages, temperature=0.0))
-    _append_turn(
-        transcript,
-        ROLE_MODERATOR,
-        json.dumps(spec, indent=2),
-    )
+    try:
+        mod_messages = _role_messages(
+            ROLE_MODERATOR,
+            context,
+            transcript,
+            round_num=MAD_ROUNDS,
+            is_final_round=True,
+        )
+        usage_before = (
+            client.usage_event_count()
+            if hasattr(client, "usage_event_count")
+            else None
+        )
+        spec = _parse_moderator_spec(
+            client.chat_json(mod_messages, temperature=0.0)
+        )
+        _append_turn(
+            transcript,
+            ROLE_MODERATOR,
+            json.dumps(spec, indent=2),
+        )
+        if usage_before is not None:
+            state.setdefault("usage_segments", []).append(
+                client.usage_summary(start_index=usage_before)
+            )
+    except Exception as exc:
+        state["status"] = "interrupted"
+        state["active_turn"] = {"role": ROLE_MODERATOR}
+        state["error"] = {
+            "type": type(exc).__name__,
+            "message": str(exc)[:2000],
+        }
+        state["transcript"] = transcript
+        if checkpoint_path:
+            _write_checkpoint(checkpoint_path, state)
+        raise
 
-    return {"transcript": transcript, "spec": spec, "rounds": MAD_ROUNDS}
+    usage = (
+        client.usage_summary(start_index=usage_start)
+        if usage_start is not None
+        else None
+    )
+    state.update({
+        "status": "completed",
+        "transcript": transcript,
+        "spec": spec,
+        "usage": usage,
+    })
+    state.pop("active_turn", None)
+    state.pop("error", None)
+    if checkpoint_path:
+        _write_checkpoint(checkpoint_path, state)
+
+    return {
+        "transcript": transcript,
+        "spec": spec,
+        "rounds": MAD_ROUNDS,
+        "usage": usage,
+        "usage_segments": list(state.get("usage_segments") or []),
+        "checkpoint_status": "completed",
+    }
 
 
 def save_mad_transcript(payload: dict[str, Any], path: str | Path) -> Path:
@@ -180,7 +303,7 @@ def save_mad_transcript(payload: dict[str, Any], path: str | Path) -> Path:
 
 def format_spec_for_opencode(spec: dict[str, Any]) -> str:
     """Render moderator spec as instructions for the OpenCode coding agent."""
-    lines = ["## MAD Consensus ->implement these harness updates\n"]
+    lines = ["## MAD Consensus — implement these harness updates\n"]
     patterns = spec.get("failure_patterns") or []
     if patterns:
         lines.append("### Failure patterns\n" + "\n".join(f"- {p}" for p in patterns))
@@ -190,7 +313,7 @@ def format_spec_for_opencode(spec: dict[str, Any]) -> str:
         for ch in changes:
             lines.append(
                 f"- [{ch.get('layer', '?')}] {ch.get('file_path', '?')}: "
-                f"{ch.get('description', '')} ->{ch.get('rationale', '')}"
+                f"{ch.get('description', '')} — {ch.get('rationale', '')}"
             )
     skills = spec.get("skills") or []
     if skills:
@@ -205,6 +328,6 @@ def format_spec_for_opencode(spec: dict[str, Any]) -> str:
         "\nImplement the above in the harness Python files. "
         "Keep edits minimal and test-safe. "
         "Do NOT edit base.py or append dynamic text (step counters, timestamps) "
-        "to tool responses ->tasks with message_history require byte-stable replay."
+        "to tool responses — tasks with message_history require byte-stable replay."
     )
     return "\n".join(lines)

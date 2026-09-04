@@ -1,10 +1,10 @@
-﻿"""Chat-completions client for Ecdysis (DashScope / OpenRouter / OpenAI-compatible).
+"""Chat-completions client for Ecdysis (DashScope / OpenRouter / OpenAI-compatible).
 
 Auto-detects the right "disable thinking" body key from ``base_url``:
 
-- DashScope (``dashscope.aliyuncs.com``) ->``{"enable_thinking": False}``
-- OpenRouter (``openrouter.ai``) ->``{"reasoning": {"enabled": False}}``
-- Other OpenAI-compatible ->no special reasoning field
+- DashScope (``dashscope.aliyuncs.com``) → ``{"enable_thinking": False}``
+- OpenRouter (``openrouter.ai``) → ``{"reasoning": {"enabled": False}}``
+- Other OpenAI-compatible → no special reasoning field
 
 Kept a ``OpenRouterClient`` name alias for back-compat with older imports.
 """
@@ -148,6 +148,7 @@ class LLMClient:
         self.disable_format = _detect_disable_format(base_url)
         self.max_retries = max_retries
         self.retry_backoff = retry_backoff
+        self._usage_events: list[dict[str, Any]] = []
 
     def _build_kwargs(self, messages: list[dict[str, str]], **overrides: Any) -> dict:
         temp = overrides.pop("temperature", self.temperature)
@@ -166,6 +167,39 @@ class LLMClient:
                 kwargs[key] = value
         return kwargs
 
+    def usage_event_count(self) -> int:
+        return len(self._usage_events)
+
+    def usage_summary(self, start_index: int = 0) -> dict[str, Any]:
+        events = self._usage_events[start_index:]
+
+        def total(field: str) -> int:
+            return sum(int(event.get(field) or 0) for event in events)
+
+        return {
+            "calls_completed": len(events),
+            "attempts": total("attempts"),
+            "duration_seconds": round(
+                sum(float(event.get("duration_seconds") or 0) for event in events), 3
+            ),
+            "prompt_tokens": total("prompt_tokens"),
+            "completion_tokens": total("completion_tokens"),
+            "total_tokens": total("total_tokens"),
+        }
+
+    def _record_usage(
+        self, response: Any, *, attempts: int, duration_seconds: float
+    ) -> None:
+        usage = getattr(response, "usage", None)
+        self._usage_events.append({
+            "model": self.model,
+            "attempts": attempts,
+            "duration_seconds": round(duration_seconds, 3),
+            "prompt_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+            "completion_tokens": getattr(usage, "completion_tokens", 0) or 0,
+            "total_tokens": getattr(usage, "total_tokens", 0) or 0,
+        })
+
     def chat(
         self,
         messages: list[dict[str, str]],
@@ -175,9 +209,11 @@ class LLMClient:
     ) -> str:
         kwargs = self._build_kwargs(messages, temperature=temperature, **overrides)
         last_exc: Exception | None = None
+        started = time.monotonic()
         for attempt in range(1, self.max_retries + 1):
             try:
                 response = self.client.chat.completions.create(**kwargs)
+                self._record_usage(response, attempts=attempt, duration_seconds=time.monotonic() - started)
                 return response.choices[0].message.content or ""
             except (RateLimitError, APIConnectionError) as exc:
                 last_exc = exc

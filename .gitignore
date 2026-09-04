@@ -11,6 +11,15 @@ env/
 .env
 *.env
 
+# Local experiment configuration and benchmark data
+configs/
+data/
+*.yaml
+*.yml
+
+# Generated experiment outputs and local work areas
+outputs/
+
 # Build and test outputs
 build/
 dist/

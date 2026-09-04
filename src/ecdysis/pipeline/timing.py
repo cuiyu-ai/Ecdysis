@@ -1,4 +1,4 @@
-﻿"""Wall-clock timing for E3–E5 evolution pipeline steps."""
+"""Wall-clock timing for E3–E5 evolution pipeline steps."""
 
 from __future__ import annotations
 
