@@ -1,18 +1,5 @@
 ﻿# Ecdysis: Efficient and Effective Training of Runtime Harnesses for LLM Agents
 
-> **Ecdysis: Efficient and Effective Training of Runtime Harnesses for LLM Agents**
-
-**Ruiqing Yue<sup>1,2</sup>**, **Yu Cui<sup>3</sup>**, **Xianhong Xue<sup>1,2</sup>**, **Tingyu Li<sup>3</sup>**, **Ting Li<sup>4</sup>**, **Wenzhuo Zhu<sup>4</sup>**, **Zhe Cui<sup>1,2</sup>**, **Haibin Zhang<sup>5,6</sup>**, **Cong Zuo<sup>3</sup>**
-
-<sup>1</sup> Chengdu Institute of Computer Applications, Chinese Academy of Sciences<br>
-<sup>2</sup> University of Chinese Academy of Sciences<br>
-<sup>3</sup> Beijing Institute of Technology<br>
-<sup>4</sup> Beijing University of Technology<br>
-<sup>5</sup> Yangtze Delta Region Institute of Tsinghua University, Zhejiang<br>
-<sup>6</sup> Jiaxing Key Laboratory of Artificial Intelligence and Cyber Resilience
-
-Yu Cui and Ruiqing Yue are co-first authors and contributed equally to this work. Yu Cui proposed the algorithm and Ruiqing Yue performed the experiments.
-
 [Project Page](https://github.com/cuiyu-ai/Ecdysis) | **Project Lead:** Yu Cui (<cuiyu@bit.edu.cn>)
 
 **Research status:** ongoing research release. This repository publishes the main Ecdysis implementation used for runtime-harness evolution while excluding local experiment configuration files, credentials, raw benchmark data, generated traces, and private run artifacts.
