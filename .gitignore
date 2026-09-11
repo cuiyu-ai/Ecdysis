@@ -11,13 +11,13 @@ env/
 .env
 *.env
 
-# Local experiment configuration and benchmark data
+# Local run inputs
 configs/
 data/
 *.yaml
 *.yml
 
-# Generated experiment outputs and local work areas
+# Generated outputs and local work areas
 outputs/
 
 # Build and test outputs
@@ -25,3 +25,10 @@ build/
 dist/
 *.egg-info/
 .pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+*.log
+
+# Local agent work areas
+.codex_tmp/

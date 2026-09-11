@@ -4,7 +4,6 @@ import re
 import unittest
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FORBIDDEN_DIRECTORIES = {
     "__pycache__",
@@ -15,12 +14,20 @@ FORBIDDEN_DIRECTORIES = {
     "simulations",
 }
 FORBIDDEN_SUFFIXES = {".pyc", ".pyo", ".yaml", ".yml"}
-OLD_TERMINOLOGY = re.compile(
+FORBIDDEN_TERMINOLOGY = re.compile(
     "|".join(
         [
             r"\bReso" + r"nate\b",
             r"\bBo" + r"T\b",
             r"\bbo" + r"t\b",
+            r"\bM" + r"AD\b",
+            r"deb" + r"ate",
+            r"\bH" + r"[2-5]\b",
+            r"Life" + r"[- ]Harness",
+            r"air" + r"line",
+            r"ret" + r"ail",
+            r"tele" + r"com",
+            r"banking_" + r"knowledge",
         ]
     ),
     re.IGNORECASE,
@@ -52,10 +59,14 @@ class PublicTreeTest(unittest.TestCase):
             if not path.is_file() or path.suffix.lower() not in {".py", ".md", ".toml"}:
                 continue
             text = path.read_text(encoding="utf-8-sig")
-            if OLD_TERMINOLOGY.search(text):
+            if FORBIDDEN_TERMINOLOGY.search(text):
                 violations.append(str(path.relative_to(PROJECT_ROOT)))
 
         self.assertEqual(violations, [])
+
+    def test_package_metadata_has_no_contributors(self) -> None:
+        metadata = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertNotIn("auth" + "ors =", metadata)
 
 
 if __name__ == "__main__":

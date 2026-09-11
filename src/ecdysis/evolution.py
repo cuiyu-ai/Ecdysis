@@ -1,36 +1,14 @@
-"""Harness evolution helpers for E3/E4.
-
-Deterministic helpers (failure extraction, coarse grouping) live next
-to the LLM-driven analyzers that produce H5 skills and H2/H3/H4
-harness patches for each round.
-
-The LLM analysis uses OpenCode CLI (open-source coding agent) to
-iterate on harness code with file tools.
-"""
+"""Core failure-analysis algorithms used by Ecdysis."""
 
 from __future__ import annotations
 
-import hashlib
 import json
-import logging
-import os
-import shutil
-import subprocess
-import tempfile
-import time
+import math
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
 from ecdysis.artifacts import EvolvedSkill, SkillArtifact
-from ecdysis.harness_replay import REPLAY_SAFETY_GUIDE, validate_staging_harness
-
-logger = logging.getLogger(__name__)
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-RUNTIME_ROOT = Path(os.getenv("ECDYSIS_RUNTIME_ROOT", str(PROJECT_ROOT))).expanduser()
-HARNESS_DIR = RUNTIME_ROOT / "tau2" / "harness"
-DESIGN_GUIDE_ENV = "ECDYSIS_HARNESS_DESIGN_GUIDE"
 
 
 def _load_results(results: dict | str | Path) -> dict:
@@ -39,15 +17,18 @@ def _load_results(results: dict | str | Path) -> dict:
     path = Path(results)
     if path.is_dir():
         path = path / "results.json"
-    return json.loads(path.read_text())
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("results must contain a JSON object")
+    return payload
 
 
-def _compact_message(message: dict[str, Any]) -> dict[str, Any]:
-    role = message.get("role")
+def _compact_message(message: dict[str, Any], max_content_chars: int) -> dict[str, Any]:
+    compact: dict[str, Any] = {"role": message.get("role")}
     content = message.get("content")
-    compact: dict[str, Any] = {"role": role}
     if content:
-        compact["content"] = str(content)[:2000]
+        compact["content"] = str(content)[:max_content_chars]
+
     tool_calls = message.get("tool_calls")
     if tool_calls:
         compact["tool_calls"] = [
@@ -59,319 +40,156 @@ def _compact_message(message: dict[str, Any]) -> dict[str, Any]:
                 or call.get("arguments"),
             }
             for call in tool_calls
+            if isinstance(call, dict)
         ]
-    if message.get("tool_call_id"):
-        compact["tool_call_id"] = message.get("tool_call_id")
-    if message.get("requestor"):
-        compact["requestor"] = message.get("requestor")
+    for key in ("tool_call_id", "requestor"):
+        if message.get(key):
+            compact[key] = message[key]
     return compact
 
 
-def _task_by_id(results: dict) -> dict[str, dict]:
-    return {str(task.get("id")): task for task in results.get("tasks", [])}
+def _task_by_id(results: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        str(task.get("id")): task
+        for task in results.get("tasks", [])
+        if isinstance(task, dict)
+    }
 
 
 def _reward(simulation: dict[str, Any]) -> float | None:
     reward_info = simulation.get("reward_info")
-    if reward_info is None:
+    if not isinstance(reward_info, dict):
         return None
     reward = reward_info.get("reward")
     return float(reward) if reward is not None else None
+
+
+def _collect_trajectories(
+    results: dict | str | Path,
+    *,
+    failures_only: bool,
+    failure_threshold: float,
+    max_messages: int,
+    max_content_chars: int,
+) -> list[dict[str, Any]]:
+    if max_messages < 0:
+        raise ValueError("max_messages must be non-negative")
+    if max_content_chars < 1:
+        raise ValueError("max_content_chars must be positive")
+    if not math.isfinite(failure_threshold):
+        raise ValueError("failure_threshold must be finite")
+
+    data = _load_results(results)
+    tasks = _task_by_id(data)
+    trajectories: list[dict[str, Any]] = []
+    for simulation in data.get("simulations", []):
+        if not isinstance(simulation, dict):
+            continue
+        reward = _reward(simulation)
+        if failures_only and (reward is None or reward >= failure_threshold):
+            continue
+
+        task_id = str(simulation.get("task_id"))
+        raw_reward_info = simulation.get("reward_info")
+        reward_info = raw_reward_info if isinstance(raw_reward_info, dict) else {}
+        raw_messages = simulation.get("messages")
+        messages = raw_messages if isinstance(raw_messages, list) else []
+        selected_messages = messages[-max_messages:] if max_messages else []
+        item = {
+            "task_id": task_id,
+            "trial": simulation.get("trial"),
+            "reward": reward,
+            "termination_reason": simulation.get("termination_reason"),
+            "reward_breakdown": reward_info.get("reward_breakdown"),
+            "task": tasks.get(task_id, {}),
+            "messages": [
+                _compact_message(message, max_content_chars)
+                for message in selected_messages
+                if isinstance(message, dict)
+            ],
+        }
+        if failures_only:
+            item.update(
+                failure=True,
+                reward_basis=reward_info.get("reward_basis"),
+                reward_info=reward_info.get("info"),
+                simulation_info=simulation.get("info"),
+            )
+        trajectories.append(item)
+    return trajectories
 
 
 def collect_failed_trajectories(
     results: dict | str | Path,
     *,
     max_messages: int = 80,
+    max_content_chars: int = 2000,
+    failure_threshold: float = 1.0,
 ) -> list[dict[str, Any]]:
-    data = _load_results(results)
-    tasks = _task_by_id(data)
-    failures: list[dict[str, Any]] = []
-
-    for simulation in data.get("simulations", []):
-        reward = _reward(simulation)
-        if reward == 1.0:
-            continue
-        task_id = str(simulation.get("task_id"))
-        reward_info = simulation.get("reward_info") or {}
-        messages = simulation.get("messages") or []
-        failures.append(
-            {
-                "task_id": task_id,
-                "trial": simulation.get("trial"),
-                "reward": reward,
-                "termination_reason": simulation.get("termination_reason"),
-                "reward_basis": reward_info.get("reward_basis"),
-                "reward_breakdown": reward_info.get("reward_breakdown"),
-                "reward_info": reward_info.get("info"),
-                "simulation_info": simulation.get("info"),
-                "task": tasks.get(task_id, {}),
-                "messages": [
-                    _compact_message(message)
-                    for message in messages[-max_messages:]
-                    if isinstance(message, dict)
-                ],
-            }
-        )
-    return failures
+    """Extract unsuccessful trajectories and compact their message evidence."""
+    return _collect_trajectories(
+        results,
+        failures_only=True,
+        failure_threshold=failure_threshold,
+        max_messages=max_messages,
+        max_content_chars=max_content_chars,
+    )
 
 
 def collect_all_trajectories(
     results: dict | str | Path,
     *,
     max_messages: int = 20,
+    max_content_chars: int = 2000,
 ) -> list[dict[str, Any]]:
-    """Collect all trajectories (success + failure) for the agent to inspect."""
-    data = _load_results(results)
-    tasks = _task_by_id(data)
-    trajectories: list[dict[str, Any]] = []
+    """Extract successful and unsuccessful trajectories in a compact form."""
+    return _collect_trajectories(
+        results,
+        failures_only=False,
+        failure_threshold=1.0,
+        max_messages=max_messages,
+        max_content_chars=max_content_chars,
+    )
 
-    for simulation in data.get("simulations", []):
-        reward = _reward(simulation)
-        task_id = str(simulation.get("task_id"))
-        reward_info = simulation.get("reward_info") or {}
-        messages = simulation.get("messages") or []
-        trajectories.append(
-            {
-                "task_id": task_id,
-                "trial": simulation.get("trial"),
-                "reward": reward,
-                "termination_reason": simulation.get("termination_reason"),
-                "reward_breakdown": reward_info.get("reward_breakdown"),
-                "task": tasks.get(task_id, {}),
-                "messages": [
-                    _compact_message(message)
-                    for message in messages[-max_messages:]
-                    if isinstance(message, dict)
-                ],
-            }
-        )
-    return trajectories
+
+def mean_trajectory_score(results: dict | str | Path) -> float:
+    """Return the arithmetic mean of all available trajectory scores."""
+    scores = [
+        reward
+        for simulation in _load_results(results).get("simulations", [])
+        if isinstance(simulation, dict)
+        and (reward := _reward(simulation)) is not None
+    ]
+    if not scores:
+        raise ValueError("results contain no scored trajectories")
+    return sum(scores) / len(scores)
 
 
 def group_failures_by_pattern(
     failures: list[dict[str, Any]],
 ) -> dict[str, list[dict[str, Any]]]:
+    """Group failures by termination reason and failed reward components."""
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for failure in failures:
-        termination = failure.get("termination_reason") or "unknown"
+        termination = str(failure.get("termination_reason") or "unknown")
         breakdown = failure.get("reward_breakdown") or {}
-        failed_basis = [
+        failed_components = sorted(
             str(key)
             for key, value in breakdown.items()
             if value is not None and float(value) < 1.0
-        ]
-        basis = "+".join(sorted(failed_basis)) if failed_basis else "no_breakdown"
-        groups[f"{termination}:{basis}"].append(failure)
-    return dict(groups)
-
-
-def artifact_from_skills(
-    *,
-    experiment: str,
-    domain: str,
-    round_num: int,
-    mode: str,
-    skills: list[dict[str, Any] | EvolvedSkill],
-    metadata: dict[str, Any] | None = None,
-) -> SkillArtifact:
-    evolved = [
-        skill if isinstance(skill, EvolvedSkill) else EvolvedSkill.from_dict(skill)
-        for skill in skills
-    ]
-    return SkillArtifact(
-        experiment=experiment,
-        domain=domain,
-        round=round_num,
-        mode=mode,
-        skills=evolved,
-        metadata=metadata or {},
-    )
-
-
-def _format_trajectory_compact(trajectory: dict[str, Any]) -> str:
-    task_id = trajectory.get("task_id")
-    reward = trajectory.get("reward")
-    termination = trajectory.get("termination_reason")
-    breakdown = trajectory.get("reward_breakdown") or {}
-    messages = trajectory.get("messages") or []
-    compact_messages = []
-    for message in messages[-8:]:
-        role = message.get("role")
-        content = (message.get("content") or "")[:300]
-        tool_calls = message.get("tool_calls") or []
-        tool_str = ""
-        if tool_calls:
-            tool_str = " " + " | ".join(
-                f"{tc.get('name')}({str(tc.get('arguments'))[:150]})"
-                for tc in tool_calls[:3]
-            )
-        compact_messages.append(f"[{role}] {content}{tool_str}")
-    status = "SUCCESS" if reward == 1.0 else "FAILED"
-    return (
-        f"[{status}] task_id={task_id} reward={reward} termination={termination} "
-        f"breakdown={breakdown}\n"
-        + "\n".join(compact_messages)
-    )
-
-
-def _read_harness_dir() -> Path:
-    return HARNESS_DIR
-
-
-def _copy_harness_tree(source_dir: Path, dest_dir: Path) -> None:
-    """Copy harness ``*.py`` files into ``dest_dir`` (OpenCode sandbox)."""
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    for path in source_dir.glob("*.py"):
-        shutil.copy2(path, dest_dir / path.name)
-
-
-class _OpenCodeWorkspace:
-    """Temporary harness copy so OpenCode never edits ``tau2/harness`` in place."""
-
-    def __init__(
-        self,
-        source_dir: Path,
-        *,
-        persistent_dir: Path | None = None,
-    ) -> None:
-        if persistent_dir is not None:
-            self._tmpdir = None
-            self.path = persistent_dir
-            if not self.path.exists() or not any(self.path.glob("*.py")):
-                _copy_harness_tree(source_dir, self.path)
-            return
-        staging_root = PROJECT_ROOT / "data" / "evolved_harness"
-        staging_root.mkdir(parents=True, exist_ok=True)
-        self._tmpdir = tempfile.TemporaryDirectory(
-            prefix="ecdysis-opencode-",
-            dir=staging_root,
         )
-        self.path = Path(self._tmpdir.name)
-        _copy_harness_tree(source_dir, self.path)
-
-    def close(self) -> None:
-        if self._tmpdir is not None:
-            self._tmpdir.cleanup()
-
-    def __enter__(self) -> Path:
-        return self.path
-
-    def __exit__(self, *args) -> None:
-        self.close()
-
-
-def _snapshot_harness_files(harness_dir: Path) -> dict[str, str]:
-    snapshot = {}
-    for f in harness_dir.glob("*.py"):
-        snapshot[f.name] = f.read_text()
-    return snapshot
-
-
-def _harness_fingerprint(snapshot: dict[str, str]) -> str:
-    payload = json.dumps(snapshot, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(payload.encode()).hexdigest()
-
-
-def _restore_harness_snapshot(
-    snapshot: dict[str, str], harness_dir: Path
-) -> None:
-    """Restore only the isolated OpenCode workspace after a failed call."""
-    for path in harness_dir.glob("*.py"):
-        if path.name not in snapshot:
-            path.unlink()
-    for name, content in snapshot.items():
-        (harness_dir / name).write_text(content)
-
-
-def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    pending = path.with_suffix(path.suffix + ".tmp")
-    pending.write_text(json.dumps(payload, indent=2, sort_keys=True))
-    pending.replace(path)
-
-
-def _failure_checkpoint_key(failure: dict[str, Any]) -> str:
-    payload = json.dumps(failure, sort_keys=True, default=str)
-    digest = hashlib.sha256(payload.encode()).hexdigest()[:12]
-    task_id = str(failure.get("task_id", "unknown")).replace("/", "_")
-    trial = str(failure.get("trial", "unknown")).replace("/", "_")
-    return f"task_{task_id}_trial_{trial}_{digest}"
-
-
-def _diff_harness_files(
-    before: dict[str, str], harness_dir: Path
-) -> list[dict[str, Any]]:
-    changes = []
-    for f in harness_dir.glob("*.py"):
-        old = before.get(f.name, "")
-        new = f.read_text()
-        if old != new:
-            changes.append(
-                {
-                    "file_path": f.name,
-                    "target": "harness_code",
-                    "description": f"Modified {f.name}",
-                    "new_content": new,
-                }
-            )
-    return changes
-
-
-def _load_agent_skills(work_dir: Path) -> list[dict[str, Any]]:
-    skills_file = work_dir / "evolved_skills.json"
-    if not skills_file.exists():
-        return []
-    try:
-        data = json.loads(skills_file.read_text())
-        if isinstance(data, list):
-            return data
-        return data.get("skills", [])
-    except (json.JSONDecodeError, KeyError):
-        return []
-
-
-def _load_design_guide() -> str:
-    configured_path = os.environ.get(DESIGN_GUIDE_ENV, "").strip()
-    if configured_path:
-        path = Path(configured_path).expanduser()
-        if not path.is_file():
-            raise FileNotFoundError(
-                f"Design guide configured by {DESIGN_GUIDE_ENV} does not exist: {path}"
-            )
-        return path.read_text()
-    return ""
-
-
-def _format_groups_for_prompt(
-    groups: dict[str, list[dict[str, Any]]],
-    *,
-    max_tasks_per_group: int = 8,
-) -> str:
-    """Render failure groups as a compact cross-task summary for the Mixed Training prompt.
-
-    Sorted by number of distinct task ids so cross-task clusters surface first.
-    """
-    if not groups:
-        return "(no groups)"
-    rows = sorted(
-        groups.items(),
-        key=lambda kv: -len({m.get("task_id") for m in kv[1]}),
-    )
-    lines: list[str] = []
-    for key, members in rows:
-        unique_tasks = sorted({str(m.get("task_id")) for m in members})
-        task_count = len(unique_tasks)
-        sample_term = members[0].get("termination_reason") or "unknown"
-        sample_breakdown = members[0].get("reward_breakdown") or {}
-        shown = unique_tasks[:max_tasks_per_group]
-        suffix = "..." if len(unique_tasks) > max_tasks_per_group else ""
-        lines.append(
-            f"- `{key}` — {len(members)} failures across {task_count} distinct "
-            f"tasks (sample termination={sample_term}, sample "
-            f"breakdown={sample_breakdown}); task_ids={shown}{suffix}"
+        component = "+".join(failed_components) or "no_breakdown"
+        groups[f"{termination}:{component}"].append(failure)
+    return dict(
+        sorted(
+            groups.items(),
+            key=lambda item: (
+                -len({row.get("task_id") for row in item[1]}),
+                -len(item[1]),
+                item[0],
+            ),
         )
-    return "\n".join(lines)
+    )
 
 
 def format_failure_groups(
@@ -379,698 +197,70 @@ def format_failure_groups(
     *,
     max_tasks_per_group: int = 8,
 ) -> str:
-    """Render grouped failures for logs, tests, or lightweight reports."""
-    return _format_groups_for_prompt(
-        groups, max_tasks_per_group=max_tasks_per_group
+    """Render grouped failures as a compact, deterministic summary."""
+    if not groups:
+        return "(no groups)"
+    rows = sorted(
+        groups.items(),
+        key=lambda item: (-len({row.get("task_id") for row in item[1]}), item[0]),
     )
+    lines: list[str] = []
+    for key, members in rows:
+        task_ids = sorted({str(member.get("task_id")) for member in members})
+        shown = task_ids[:max_tasks_per_group]
+        suffix = "..." if len(task_ids) > max_tasks_per_group else ""
+        lines.append(
+            f"- `{key}` - {len(members)} failures across {len(task_ids)} "
+            f"distinct tasks; task_ids={shown}{suffix}"
+        )
+    return "\n".join(lines)
 
 
-def _filter_replay_safe_changes(
-    changes: list[dict[str, Any]],
-    *,
-    domain: str | None,
-    staging_dir: Path,
-) -> list[dict[str, Any]]:
-    """Drop ``code_changes`` that fail message_history replay preflight."""
-    if not changes or not domain:
-        return changes
-    err = validate_staging_harness(
-        domain, staging_dir, code_changes=changes
-    )
-    if err is None:
-        return changes
-    logger.warning(
-        "Replay preflight rejected %d harness file change(s) for domain=%s: %s",
-        len(changes),
-        domain,
-        err,
-    )
-    return []
-
-
-def _build_agent_prompt(
-    trajectories: list[dict[str, Any]],
+def analyze_failures_fdcr(
     failures: list[dict[str, Any]],
     *,
-    mode: str,
-    harness_dir: Path,
-    domain: str | None = None,
-) -> str:
-    design_guide = _load_design_guide()
-    harness_files = list(harness_dir.glob("*.py"))
-    harness_listing = ", ".join(f.name for f in harness_files)
-
-    trajectory_blob = "\n\n---\n\n".join(
-        _format_trajectory_compact(t) for t in trajectories[:30]
-    )
-
-    if mode == "cross_instance":
-        groups = group_failures_by_pattern(failures)
-        grouping_section = (
-            "## Cross-Task Failure Grouping\n"
-            "Failures have been clustered by "
-            "`(termination_reason, failed_reward_basis)`. Groups containing ≥2 "
-            "distinct task IDs are cross-task patterns and should be the primary "
-            "unit of generalization. Design harness updates that fix the cluster, "
-            "not the individual case.\n\n"
-            f"{_format_groups_for_prompt(groups)}"
-        )
-        task_framing = (
-            "Identify recurring failure patterns **across tasks**. Prioritize "
-            "groups with multiple distinct task IDs; treat single-task failures "
-            "as supporting evidence but not as the primary unit for harness "
-            "updates."
-        )
-    else:
-        grouping_section = (
-            "## Per-Task Focus\n"
-            "Each failure is analyzed in isolation. Look for patterns that "
-            "recur across this task's multiple trials but do not assume "
-            "cross-task similarity."
-        )
-        task_framing = (
-            "Analyze each failure in isolation. Propose targeted harness "
-            "updates that fix this specific failure mode; do not generalize "
-            "to other tasks. Inspect only the primary domain harness and its "
-            "direct dependencies. Implement at most one minimal targeted "
-            "change, run no more than two narrow checks, and finish once that "
-            "change is verified. Do not perform broad repository exploration."
-        )
-
-    domain_hint = ""
-    if domain:
-        domain_hint = (
-            f"\nPrimary domain harness file for this run: `{domain}.py`. "
-            "Prefer minimal edits there unless a shared helper in another file "
-            "is clearly required.\n"
-        )
-
-    return f"""You are a coding agent responsible for improving a runtime harness for a deterministic LLM-agent environment. Your goal is to improve task performance by adapting the runtime interface between the frozen model and the environment, without changing model weights, benchmark tasks, or environment evaluation logic.
-
-## Design Guide
-{design_guide}
-
-{REPLAY_SAFETY_GUIDE}
-
-## Current Harness Implementation
-The harness code is in the current directory: {harness_listing}
-{domain_hint}
-
-{grouping_section}
-
-## Trajectories (Previous Iteration)
-{trajectory_blob}
-
-## Your Task
-{task_framing}
-
-For each pattern, determine the earliest lifecycle point where it can be reliably detected or prevented: before interaction, during task conditioning, before environment execution, or after execution.
-
-Focus on mechanically identifiable deterministic failures such as invalid action formats, wrong tool conventions, missing required fields, repeated no-op actions, loops, premature submissions, budget exhaustion, or recurring procedural mistakes.
-
-Directly implement targeted, minimal updates in the appropriate harness layer. Do not only return an analysis report. Do not use hidden oracle information, test labels, task modifications, environment transition changes, or evaluation-criteria changes.
-
-After editing, run or recommend the narrowest regression checks available. Inspect cases where the harness may over-trigger, block a valid action, inject misleading guidance, or reduce performance on previously successful trajectories.
-
-When finished, summarize:
-1. dominant failure patterns found;
-2. harness layer responsible for each update;
-3. implemented code changes;
-4. why each update is safe under the deterministic environment contract;
-5. remaining failure modes to monitor next.
-"""
-
-
-def _call_opencode(
-    prompt: str,
-    work_dir: Path,
-    model: str = "dashscope/deepseek-v4-pro",
-    timeout: int = 600,
-    max_retries: int = 3,
-    backoff: float = 10.0,
-    audit_events: list[dict[str, Any]] | None = None,
-) -> str:
-    """Call OpenCode CLI to run the coding agent. Retries on transient
-    failures (non-zero exit, subprocess.TimeoutExpired) with linear
-    backoff. Permanent failures (4xx in stderr) are not retried.
-    """
-    cmd = [
-        "opencode",
-        "run",
-        "--dir", str(work_dir),
-        "--model", model,
-        "--format", "json",
-        prompt,
-    ]
-    last_exc: Exception | None = None
-    for attempt in range(1, max_retries + 1):
-        attempt_started = time.monotonic()
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=str(work_dir),
-            )
-            if result.returncode == 0:
-                if audit_events is not None:
-                    audit_events.append({
-                        "model": model,
-                        "attempt": attempt,
-                        "duration_seconds": round(
-                            time.monotonic() - attempt_started, 3
-                        ),
-                        "success": True,
-                    })
-                return result.stdout
-            last_exc = RuntimeError(
-                f"OpenCode CLI failed (exit {result.returncode}):\n"
-                f"stdout: {result.stdout[-2000:]}\n"
-                f"stderr: {result.stderr[-2000:]}"
-            )
-            if audit_events is not None:
-                audit_events.append({
-                    "model": model,
-                    "attempt": attempt,
-                    "duration_seconds": round(
-                        time.monotonic() - attempt_started, 3
-                    ),
-                    "success": False,
-                    "error_type": "nonzero_exit",
-                    "returncode": result.returncode,
-                })
-        except subprocess.TimeoutExpired as exc:
-            last_exc = exc
-            if audit_events is not None:
-                audit_events.append({
-                    "model": model,
-                    "attempt": attempt,
-                    "duration_seconds": round(
-                        time.monotonic() - attempt_started, 3
-                    ),
-                    "success": False,
-                    "error_type": "timeout",
-                    "timeout_seconds": timeout,
-                })
-        if attempt >= max_retries:
-            break
-        logger.warning(
-            "OpenCode failed (attempt %d/%d), retrying in %.0fs",
-            attempt, max_retries, backoff * attempt,
-        )
-        time.sleep(backoff * attempt)
-    raise RuntimeError(
-        f"OpenCode CLI failed after {max_retries} attempts: {last_exc}"
-    )
-
-
-def _summarize_opencode_events(events: list[dict[str, Any]]) -> dict[str, Any]:
-    return {
-        "calls_completed": sum(1 for event in events if event.get("success")),
-        "calls_failed": sum(1 for event in events if not event.get("success")),
-        "timeouts": sum(
-            1 for event in events if event.get("error_type") == "timeout"
-        ),
-        "attempts": sum(
-            int(event["attempts"])
-            if event.get("attempts") is not None
-            else 1
-            for event in events
-        ),
-        "duration_seconds": round(
-            sum(float(event.get("duration_seconds") or 0) for event in events), 3
-        ),
-    }
-
-def _run_opencode_analysis(
-    *,
-    prompt: str,
-    source_harness_dir: Path,
-    model: str,
-    domain: str | None = None,
-    checkpoint_dir: Path | None = None,
-    timeout: int = 600,
-    max_retries: int = 1,
+    client: Any,
+    scope: str | None = None,
+    checkpoint_path: Path | None = None,
+    refinement_passes: int = 2,
 ) -> dict[str, Any]:
-    """Run one OpenCode stage with an optional durable batch checkpoint."""
-    source_snapshot = _snapshot_harness_files(source_harness_dir)
-    source_fingerprint = _harness_fingerprint(source_snapshot)
-    prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()
-    manifest_path = checkpoint_dir / "manifest.json" if checkpoint_dir else None
-    workspace_dir = checkpoint_dir / "workspace" if checkpoint_dir else None
-    manifest: dict[str, Any] = {
-        "version": 1,
-        "status": "pending",
-        "domain": domain,
-        "model": model,
-        "source_fingerprint": source_fingerprint,
-        "prompt_hash": prompt_hash,
-        "skills": [],
-        "audit_events": [],
-    }
-    if manifest_path and manifest_path.exists():
-        manifest = json.loads(manifest_path.read_text())
-        expected = {
-            "domain": domain,
-            "model": model,
-            "source_fingerprint": source_fingerprint,
-            "prompt_hash": prompt_hash,
-        }
-        mismatches = [
-            key for key, value in expected.items() if manifest.get(key) != value
-        ]
-        if mismatches:
-            raise RuntimeError(
-                "Batch evolution checkpoint mismatch for "
-                f"{mismatches}: {checkpoint_dir}"
-            )
-        if manifest.get("status") == "completed":
-            if not workspace_dir or not workspace_dir.is_dir():
-                raise RuntimeError(
-                    f"Completed batch workspace is missing: {workspace_dir}"
-                )
-            actual_workspace = _harness_fingerprint(
-                _snapshot_harness_files(workspace_dir)
-            )
-            if manifest.get("workspace_fingerprint") != actual_workspace:
-                raise RuntimeError(
-                    "Completed batch workspace fingerprint mismatch: "
-                    f"{workspace_dir}"
-                )
-    elif workspace_dir and workspace_dir.exists() and any(workspace_dir.glob("*.py")):
-        raise RuntimeError(
-            "Batch checkpoint workspace exists without a manifest: "
-            f"{workspace_dir}"
-        )
-
-    audit_events: list[dict[str, Any]] = list(manifest.get("audit_events") or [])
-    with _OpenCodeWorkspace(
-        source_harness_dir, persistent_dir=workspace_dir
-    ) as workspace:
-        before = source_snapshot
-        if manifest_path and not manifest_path.exists():
-            _write_json_atomic(manifest_path, manifest)
-        if manifest.get("status") != "completed":
-            manifest["status"] = "running"
-            manifest.pop("error", None)
-            if manifest_path:
-                _write_json_atomic(manifest_path, manifest)
-            try:
-                _call_opencode(
-                    prompt,
-                    workspace,
-                    model=model,
-                    timeout=timeout,
-                    max_retries=max_retries,
-                    audit_events=audit_events,
-                )
-            except Exception as exc:
-                failed_dir = checkpoint_dir / "failed_attempt" if checkpoint_dir else None
-                if failed_dir is not None:
-                    failed_dir.mkdir(parents=True, exist_ok=True)
-                    _copy_harness_tree(workspace, failed_dir)
-                    (failed_dir / "error.txt").write_text(str(exc))
-                _restore_harness_snapshot(before, workspace)
-                skills_file = workspace / "evolved_skills.json"
-                if skills_file.exists():
-                    skills_file.unlink()
-                manifest["status"] = "interrupted"
-                manifest["error"] = {
-                    "type": type(exc).__name__,
-                    "message": str(exc)[:2000],
-                }
-                manifest["audit_events"] = audit_events
-                if manifest_path:
-                    _write_json_atomic(manifest_path, manifest)
-                raise
-            manifest["skills"] = _load_agent_skills(workspace)
-            skills_file = workspace / "evolved_skills.json"
-            if skills_file.exists():
-                skills_file.unlink()
-            manifest["audit_events"] = audit_events
-            manifest["status"] = "completed"
-            manifest["workspace_fingerprint"] = _harness_fingerprint(
-                _snapshot_harness_files(workspace)
-            )
-            if manifest_path:
-                _write_json_atomic(manifest_path, manifest)
-        changes = _diff_harness_files(before, workspace)
-        changes = _filter_replay_safe_changes(
-            changes, domain=domain, staging_dir=workspace
-        )
-    return {
-        "skills": list(manifest.get("skills") or []),
-        "code_changes": changes,
-        "opencode_usage": _summarize_opencode_events(audit_events),
-        "checkpoint_dir": str(checkpoint_dir) if checkpoint_dir else None,
-        "checkpoint_status": "completed",
-    }
-
-
-def analyze_failures_serial(
-    failures: list[dict[str, Any]],
-    *,
-    agent_model: str | None = None,
-    all_trajectories: list[dict[str, Any]] | None = None,
-    domain: str | None = None,
-    checkpoint_dir: Path | None = None,
-    timeout: int = 600,
-    max_retries: int = 1,
-    context_scope: str = "failure_only",
-) -> dict[str, Any]:
-    """E3-style serial analysis with a durable checkpoint per failure.
-
-    Each call receives only its own failed trajectory. A failed or timed-out
-    call is archived and rolled back without discarding successful calls from
-    the same round. The 600-second wall-clock limit remains the default.
-    """
-    if not failures:
-        return {"skills": [], "code_changes": []}
-    live_harness = _read_harness_dir()
-    model = agent_model or "dashscope/deepseek-v4-pro"
-    timeout_overrides_raw = os.environ.get(
-        "ECDYSIS_EVOLUTION_TIMEOUT_OVERRIDES_JSON", ""
-    ).strip()
-    timeout_overrides: dict[str, int] = {}
-    timeout_override_spec = os.environ.get(
-        "ECDYSIS_EVOLUTION_TIMEOUT_OVERRIDE", ""
-    ).strip()
-    if timeout_override_spec:
-        failure_key, separator, override_seconds_raw = (
-            timeout_override_spec.rpartition("=")
-        )
-        if (
-            not separator
-            or not failure_key
-            or not override_seconds_raw.isdigit()
-            or int(override_seconds_raw) <= 0
-        ):
-            raise ValueError(
-                "ECDYSIS_EVOLUTION_TIMEOUT_OVERRIDE must have the form "
-                "failure_key=positive_integer_seconds"
-            )
-        timeout_overrides[failure_key] = int(override_seconds_raw)
-    if timeout_overrides_raw:
-        try:
-            parsed_timeout_overrides = json.loads(timeout_overrides_raw)
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                "ECDYSIS_EVOLUTION_TIMEOUT_OVERRIDES_JSON must be valid JSON"
-            ) from exc
-        if not isinstance(parsed_timeout_overrides, dict):
-            raise ValueError(
-                "ECDYSIS_EVOLUTION_TIMEOUT_OVERRIDES_JSON must be a JSON object"
-            )
-        for failure_key, override_seconds in parsed_timeout_overrides.items():
-            if (
-                not isinstance(failure_key, str)
-                or isinstance(override_seconds, bool)
-                or not isinstance(override_seconds, int)
-                or override_seconds <= 0
-            ):
-                raise ValueError(
-                    "Evolution timeout overrides must map failure-key strings "
-                    "to positive integer seconds"
-                )
-            timeout_overrides[failure_key] = override_seconds
-    if context_scope not in {"failure_only", "all"}:
-        raise ValueError(
-            "serial context_scope must be 'failure_only' or 'all'"
-        )
-    trajectories = all_trajectories or failures
-
-    source_snapshot = _snapshot_harness_files(live_harness)
-    source_fingerprint = _harness_fingerprint(source_snapshot)
-    manifest_path = checkpoint_dir / "manifest.json" if checkpoint_dir else None
-    workspace_dir = checkpoint_dir / "workspace" if checkpoint_dir else None
-    manifest: dict[str, Any] = {
-        "version": 1,
-        "domain": domain,
-        "model": model,
-        "context_scope": context_scope,
-        "source_fingerprint": source_fingerprint,
-        "completed": [],
-        "failed_attempts": [],
-        "skills": [],
-        "audit_events": [],
-    }
-    if manifest_path and manifest_path.exists():
-        manifest = json.loads(manifest_path.read_text())
-        expected = manifest.get("source_fingerprint")
-        if expected != source_fingerprint:
-            raise RuntimeError(
-                "Serial evolution checkpoint does not match the current "
-                f"harness baseline: {checkpoint_dir}"
-            )
-        if (
-            manifest.get("domain") != domain
-            or manifest.get("model") != model
-            or manifest.get("context_scope") != context_scope
-        ):
-            raise RuntimeError(
-                "Serial evolution checkpoint domain/model mismatch: "
-                f"{checkpoint_dir}"
-            )
-        if manifest.get("completed"):
-            if not workspace_dir or not workspace_dir.is_dir():
-                raise RuntimeError(
-                    f"Serial checkpoint workspace is missing: {workspace_dir}"
-                )
-            actual_workspace = _harness_fingerprint(
-                _snapshot_harness_files(workspace_dir)
-            )
-            if manifest.get("workspace_fingerprint") != actual_workspace:
-                raise RuntimeError(
-                    "Serial checkpoint workspace fingerprint mismatch: "
-                    f"{workspace_dir}"
-                )
-    elif workspace_dir and workspace_dir.exists() and any(workspace_dir.glob("*.py")):
-        raise RuntimeError(
-            "Checkpoint workspace exists without a manifest; preserve and "
-            f"inspect it before continuing: {workspace_dir}"
-        )
-
-    completed = set(manifest.get("completed") or [])
-    all_skills: list[dict[str, Any]] = list(manifest.get("skills") or [])
-    audit_events: list[dict[str, Any]] = list(manifest.get("audit_events") or [])
-    failures_this_run: list[dict[str, Any]] = []
-    if timeout_overrides:
-        manifest["runtime_timeout_overrides"] = timeout_overrides
-
-    with _OpenCodeWorkspace(
-        live_harness, persistent_dir=workspace_dir
-    ) as workspace:
-        initial = source_snapshot
-        if manifest_path and not manifest_path.exists():
-            _write_json_atomic(manifest_path, manifest)
-        for failure in failures:
-            failure_key = _failure_checkpoint_key(failure)
-            if failure_key in completed:
-                logger.info("Reusing serial evolution checkpoint: %s", failure_key)
-                continue
-            failure_timeout = timeout_overrides.get(failure_key, timeout)
-            before_failure = _snapshot_harness_files(workspace)
-            prompt = _build_agent_prompt(
-                [failure] if context_scope == "failure_only" else trajectories,
-                [failure],
-                mode="original",
-                harness_dir=workspace,
-                domain=domain,
-            )
-            event_start = len(audit_events)
-            try:
-                _call_opencode(
-                    prompt,
-                    workspace,
-                    model=model,
-                    timeout=failure_timeout,
-                    max_retries=max_retries,
-                    audit_events=audit_events,
-                )
-                for event in audit_events[event_start:]:
-                    event["failure_key"] = failure_key
-                all_skills.extend(_load_agent_skills(workspace))
-                skills_file = workspace / "evolved_skills.json"
-                if skills_file.exists():
-                    skills_file.unlink()
-                completed.add(failure_key)
-                manifest["completed"] = sorted(completed)
-            except Exception as exc:
-                for event in audit_events[event_start:]:
-                    event["failure_key"] = failure_key
-                failed_root = (
-                    checkpoint_dir / "failed_attempts" / failure_key
-                    if checkpoint_dir
-                    else None
-                )
-                if failed_root is not None:
-                    failed_root.mkdir(parents=True, exist_ok=True)
-                    _copy_harness_tree(workspace, failed_root)
-                    (failed_root / "error.txt").write_text(str(exc))
-                _restore_harness_snapshot(before_failure, workspace)
-                skills_file = workspace / "evolved_skills.json"
-                if skills_file.exists():
-                    skills_file.unlink()
-                failure_record = {
-                    "failure_key": failure_key,
-                    "task_id": failure.get("task_id"),
-                    "trial": failure.get("trial"),
-                    "error_type": type(exc).__name__,
-                    "error": str(exc)[:2000],
-                }
-                failures_this_run.append(failure_record)
-                manifest.setdefault("failed_attempts", []).append(failure_record)
-                logger.warning(
-                    "Serial OpenCode failure isolated at %s: %s",
-                    failure_key,
-                    exc,
-                )
-            manifest["skills"] = all_skills
-            manifest["audit_events"] = audit_events
-            manifest["workspace_fingerprint"] = _harness_fingerprint(
-                _snapshot_harness_files(workspace)
-            )
-            if manifest_path:
-                _write_json_atomic(manifest_path, manifest)
-        changes = _diff_harness_files(initial, workspace)
-        changes = _filter_replay_safe_changes(
-            changes, domain=domain, staging_dir=workspace
-        )
-
-    requested_keys = {_failure_checkpoint_key(failure) for failure in failures}
-    unresolved = sorted(requested_keys - completed)
-    manifest["status"] = "incomplete" if unresolved else "completed"
-    manifest["unresolved"] = unresolved
-    if manifest_path:
-        _write_json_atomic(manifest_path, manifest)
-    if unresolved:
-        raise RuntimeError(
-            "Serial evolution round is incomplete; resume from checkpoint. "
-            f"Unresolved nodes: {unresolved}"
-        )
-
-    return {
-        "skills": all_skills,
-        "code_changes": changes,
-        "opencode_usage": _summarize_opencode_events(audit_events),
-        "opencode_failures": failures_this_run,
-        "checkpoint_dir": str(checkpoint_dir) if checkpoint_dir else None,
-        "completed_failure_keys": sorted(completed),
-        "checkpoint_status": "completed",
-    }
-
-
-def analyze_failures_batched(
-    failures: list[dict[str, Any]],
-    *,
-    agent_model: str | None = None,
-    all_trajectories: list[dict[str, Any]] | None = None,
-    domain: str | None = None,
-    checkpoint_dir: Path | None = None,
-    timeout: int = 600,
-    max_retries: int = 1,
-) -> dict[str, Any]:
-    """E4-style batched analysis. Single OpenCode CLI call over all grouped failures."""
-    if not failures:
-        return {"skills": [], "code_changes": []}
-    live_harness = _read_harness_dir()
-    model = agent_model or "dashscope/deepseek-v4-pro"
-    trajectories = all_trajectories or failures
-    timeout_override_raw = os.environ.get(
-        "ECDYSIS_BATCH_EVOLUTION_TIMEOUT_OVERRIDE_SECONDS", ""
-    ).strip()
-    if timeout_override_raw:
-        if not timeout_override_raw.isdigit() or int(timeout_override_raw) <= 0:
-            raise ValueError(
-                "ECDYSIS_BATCH_EVOLUTION_TIMEOUT_OVERRIDE_SECONDS must be "
-                "a positive integer"
-            )
-        timeout = int(timeout_override_raw)
-
-    prompt = _build_agent_prompt(
-        trajectories,
-        failures,
-        mode="cross_instance",
-        harness_dir=live_harness,
-        domain=domain,
-    )
-    return _run_opencode_analysis(
-        prompt=prompt,
-        source_harness_dir=live_harness,
-        model=model,
-        domain=domain,
-        checkpoint_dir=checkpoint_dir,
-        timeout=timeout,
-        max_retries=max_retries,
-    )
-
-
-def analyze_failures_mad_batched(
-    failures: list[dict[str, Any]],
-    *,
-    mad_client,
-    agent_model: str | None = None,
-    all_trajectories: list[dict[str, Any]] | None = None,
-    domain: str | None = None,
-    artifact_dir: Path | None = None,
-    round_num: int = 1,
-    checkpoint_dir: Path | None = None,
-    timeout: int = 600,
-    max_retries: int = 1,
-) -> dict[str, Any]:
-    """E5: Mixed Training clustering → 2-round MAD → OpenCode staging."""
-    if not failures:
-        return {"skills": [], "code_changes": [], "mad": None}
-
-    from ecdysis.mad.debate import (
-        format_spec_for_opencode,
-        run_harness_mad,
-        save_mad_transcript,
-    )
+    """Group failure evidence and run FDCR cross-role review."""
+    from ecdysis.fdcr import run_harness_fdcr
 
     groups = group_failures_by_pattern(failures)
-    mad_result = run_harness_mad(
+    review = run_harness_fdcr(
         failures,
         groups,
-        client=mad_client,
-        domain=domain,
-        checkpoint_path=(
-            checkpoint_dir / "mad.json" if checkpoint_dir else None
-        ),
+        client=client,
+        scope=scope,
+        checkpoint_path=checkpoint_path,
+        rounds=refinement_passes,
     )
-    if artifact_dir is not None:
-        save_mad_transcript(
-            mad_result, artifact_dir / f"round_{round_num}_mad.json"
-        )
+    return {"groups": groups, "review": review}
 
-    live_harness = _read_harness_dir()
-    model = agent_model or "dashscope/deepseek-v4-pro"
-    trajectories = all_trajectories or failures
 
-    base_prompt = _build_agent_prompt(
-        trajectories,
-        failures,
-        mode="cross_instance",
-        harness_dir=live_harness,
-        domain=domain,
+def artifact_from_skills(
+    *,
+    experiment: str,
+    scope: str,
+    round_num: int,
+    mode: str,
+    skills: list[dict[str, Any] | EvolvedSkill],
+    metadata: dict[str, Any] | None = None,
+) -> SkillArtifact:
+    """Build a validated skill artifact from model-produced dictionaries."""
+    evolved = [
+        skill if isinstance(skill, EvolvedSkill) else EvolvedSkill.from_dict(skill)
+        for skill in skills
+    ]
+    return SkillArtifact(
+        experiment=experiment,
+        scope=scope,
+        round=round_num,
+        mode=mode,
+        skills=evolved,
+        metadata=metadata or {},
     )
-    mad_section = format_spec_for_opencode(mad_result["spec"])
-    prompt = f"{mad_section}\n\n---\n\n{base_prompt}"
-
-    opencode_out = _run_opencode_analysis(
-        prompt=prompt,
-        source_harness_dir=live_harness,
-        model=model,
-        domain=domain,
-        checkpoint_dir=(
-            checkpoint_dir / "opencode" if checkpoint_dir else None
-        ),
-        timeout=timeout,
-        max_retries=max_retries,
-    )
-    opencode_out["mad"] = mad_result
-    return opencode_out
 
 
 def check_convergence(
@@ -1078,30 +268,24 @@ def check_convergence(
     threshold: float = 0.005,
     window: int = 3,
 ) -> bool:
-    """Check if evolution has converged.
-
-    Requires at least ``window`` rounds of history. Returns True when the
-    *maximum* pass@k improvement observed in the last ``window`` rounds is
-    below ``threshold``. Using the max (not the last delta) avoids being
-    fooled by single-round noise — only a sustained plateau triggers a
-    stop.
-    """
+    """Return true after a sustained metric plateau over the selected window."""
+    if window < 2:
+        raise ValueError("window must be at least 2")
     if len(round_records) < window:
         return False
     recent = round_records[-window:]
     deltas = [
-        recent[i].get("pass@k", 0) - recent[i - 1].get("pass@k", 0)
-        for i in range(1, len(recent))
+        float(recent[index].get("score", 0))
+        - float(recent[index - 1].get("score", 0))
+        for index in range(1, len(recent))
     ]
-    if not deltas:
-        return False
     return max(deltas) < threshold
 
 
 def check_regression(
-    before_passk: float,
-    after_passk: float,
+    before_score: float,
+    after_score: float,
     tolerance: float = 0.05,
 ) -> bool:
-    """Check if harness changes caused regression (pass@k dropped > tolerance)."""
-    return (before_passk - after_passk) > tolerance
+    """Return true when the score drop exceeds the accepted tolerance."""
+    return (before_score - after_score) > tolerance

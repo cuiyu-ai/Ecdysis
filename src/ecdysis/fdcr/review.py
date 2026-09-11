@@ -1,4 +1,4 @@
-"""Two-round multi-agent debate → harness patch specification."""
+"""Failure-Driven Collaborative Refinement for update specifications."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from typing import Any
 from ecdysis.llm_client import LLMClient
 
 from .roles import (
-    MAD_ROLES,
+    FDCR_ROLES,
     ROLE_ANALYST,
     ROLE_CRITIC,
     ROLE_ENGINEER,
@@ -18,7 +18,7 @@ from .roles import (
     ROLE_SYSTEM,
 )
 
-MAD_ROUNDS = 2
+FDCR_ROUNDS = 2
 
 
 def _write_checkpoint(path: Path, payload: dict[str, Any]) -> None:
@@ -32,7 +32,7 @@ def _format_failure_context(
     failures: list[dict[str, Any]],
     groups: dict[str, list[dict[str, Any]]],
     *,
-    domain: str | None,
+    scope: str | None,
 ) -> str:
     group_lines = []
     for key, members in sorted(
@@ -40,9 +40,10 @@ def _format_failure_context(
         key=lambda kv: -len({m.get("task_id") for m in kv[1]}),
     ):
         task_ids = sorted({str(m.get("task_id")) for m in members})
+        evidence_role = "recurring" if len(task_ids) >= 2 else "auxiliary"
         group_lines.append(
             f"- cluster `{key}`: {len(members)} failures, "
-            f"{len(task_ids)} tasks {task_ids[:8]}"
+            f"{len(task_ids)} tasks {task_ids[:8]} ({evidence_role} evidence)"
         )
     sample = []
     for f in failures[:12]:
@@ -51,9 +52,9 @@ def _format_failure_context(
             f"reward={f.get('reward')} term={f.get('termination_reason')} "
             f"breakdown={f.get('reward_breakdown')}"
         )
-    domain_line = f"Domain harness file: `{domain}.py`\n" if domain else ""
+    scope_line = f"Task scope: `{scope}`\n" if scope else ""
     return (
-        f"{domain_line}"
+        f"{scope_line}"
         f"## Failure clusters ({len(groups)})\n"
         + "\n".join(group_lines)
         + "\n\n## Sample failures\n"
@@ -75,6 +76,7 @@ def _role_messages(
     transcript: list[dict[str, str]],
     *,
     round_num: int,
+    total_rounds: int,
     is_final_round: bool,
 ) -> list[dict[str, str]]:
     if role == ROLE_MODERATOR:
@@ -98,7 +100,7 @@ def _role_messages(
         )
     else:
         task = (
-            "Propose harness updates (H2/H3/H4/H5) for the failure clusters below."
+            "Propose minimal runtime updates for the failure clusters below."
         )
 
     history = "\n\n".join(
@@ -106,8 +108,8 @@ def _role_messages(
     )
     user = (
         f"## Context\n{context}\n\n"
-        f"## Debate so far\n{history or '(opening round)'}\n\n"
-        f"## Your turn ({role}, round {round_num}/{MAD_ROUNDS})\n{task}"
+        f"## Review so far\n{history or '(opening round)'}\n\n"
+        f"## Your turn ({role}, round {round_num}/{total_rounds})\n{task}"
     )
     return [
         {"role": "system", "content": ROLE_SYSTEM[role]},
@@ -131,32 +133,44 @@ def _parse_moderator_spec(parsed: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def run_harness_mad(
+def run_harness_fdcr(
     failures: list[dict[str, Any]],
     groups: dict[str, list[dict[str, Any]]],
     *,
     client: LLMClient,
-    domain: str | None = None,
+    scope: str | None = None,
     checkpoint_path: Path | None = None,
+    rounds: int = FDCR_ROUNDS,
 ) -> dict[str, Any]:
-    """Run 2-round MAD (Analyst → Critic → Engineer) × 2, then Moderator JSON."""
-    usage_start = client.usage_event_count() if hasattr(client, "usage_event_count") else None
+    """Run FDCR review passes, then synthesize a moderator JSON spec."""
+    if rounds < 1:
+        raise ValueError("rounds must be at least 1")
+    usage_start = (
+        client.usage_event_count()
+        if hasattr(client, "usage_event_count")
+        else None
+    )
     if not failures:
         return {
             "transcript": [],
             "spec": _parse_moderator_spec(None),
-            "rounds": MAD_ROUNDS,
-            "usage": client.usage_summary(start_index=usage_start) if usage_start is not None else None,
+            "rounds": rounds,
+            "usage": (
+                client.usage_summary(start_index=usage_start)
+                if usage_start is not None
+                else None
+            ),
         }
 
-    context = _format_failure_context(failures, groups, domain=domain)
-    context_hash = hashlib.sha256(context.encode()).hexdigest()
+    context = _format_failure_context(failures, groups, scope=scope)
+    context_hash = hashlib.sha256(f"{rounds}\0{context}".encode()).hexdigest()
     model = str(getattr(client, "model", ""))
     state: dict[str, Any] = {
         "version": 1,
         "status": "pending",
         "context_hash": context_hash,
         "model": model,
+        "rounds": rounds,
         "next_turn_index": 0,
         "transcript": [],
         "usage_segments": [],
@@ -165,13 +179,13 @@ def run_harness_mad(
         state = json.loads(checkpoint_path.read_text())
         if state.get("context_hash") != context_hash or state.get("model") != model:
             raise RuntimeError(
-                f"MAD checkpoint input/model mismatch: {checkpoint_path}"
+                f"FDCR checkpoint input/model mismatch: {checkpoint_path}"
             )
         if state.get("status") == "completed":
             return {
                 "transcript": list(state.get("transcript") or []),
                 "spec": _parse_moderator_spec(state.get("spec")),
-                "rounds": MAD_ROUNDS,
+                "rounds": rounds,
                 "usage": state.get("usage"),
                 "usage_segments": list(state.get("usage_segments") or []),
                 "checkpoint_status": "completed",
@@ -180,14 +194,14 @@ def run_harness_mad(
     transcript: list[dict[str, str]] = list(state.get("transcript") or [])
     turn_plan = [
         (round_num, role)
-        for round_num in range(1, MAD_ROUNDS + 1)
-        for role in MAD_ROLES
+        for round_num in range(1, rounds + 1)
+        for role in FDCR_ROLES
     ]
     next_turn = int(state.get("next_turn_index") or 0)
 
     for turn_index in range(next_turn, len(turn_plan)):
         round_num, role = turn_plan[turn_index]
-        is_final = round_num == MAD_ROUNDS
+        is_final = round_num == rounds
         state["status"] = "running"
         state["active_turn"] = {
             "index": turn_index,
@@ -202,6 +216,7 @@ def run_harness_mad(
                 context,
                 transcript,
                 round_num=round_num,
+                total_rounds=rounds,
                 is_final_round=is_final,
             )
             usage_before = (
@@ -236,7 +251,8 @@ def run_harness_mad(
             ROLE_MODERATOR,
             context,
             transcript,
-            round_num=MAD_ROUNDS,
+            round_num=rounds,
+            total_rounds=rounds,
             is_final_round=True,
         )
         usage_before = (
@@ -287,23 +303,23 @@ def run_harness_mad(
     return {
         "transcript": transcript,
         "spec": spec,
-        "rounds": MAD_ROUNDS,
+        "rounds": rounds,
         "usage": usage,
         "usage_segments": list(state.get("usage_segments") or []),
         "checkpoint_status": "completed",
     }
 
 
-def save_mad_transcript(payload: dict[str, Any], path: str | Path) -> Path:
+def save_fdcr_transcript(payload: dict[str, Any], path: str | Path) -> Path:
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, indent=2))
     return out
 
 
-def format_spec_for_opencode(spec: dict[str, Any]) -> str:
-    """Render moderator spec as instructions for the OpenCode coding agent."""
-    lines = ["## MAD Consensus — implement these harness updates\n"]
+def format_update_spec(spec: dict[str, Any]) -> str:
+    """Render the moderator specification as implementation instructions."""
+    lines = ["## FDCR Review - implement these harness updates\n"]
     patterns = spec.get("failure_patterns") or []
     if patterns:
         lines.append("### Failure patterns\n" + "\n".join(f"- {p}" for p in patterns))
@@ -312,22 +328,19 @@ def format_spec_for_opencode(spec: dict[str, Any]) -> str:
         lines.append("\n### Proposed changes")
         for ch in changes:
             lines.append(
-                f"- [{ch.get('layer', '?')}] {ch.get('file_path', '?')}: "
-                f"{ch.get('description', '')} — {ch.get('rationale', '')}"
+                f"- [{ch.get('component', '?')}] {ch.get('description', '')}: "
+                f"{ch.get('rationale', '')}"
             )
     skills = spec.get("skills") or []
     if skills:
         lines.append(
-            "\n### H5 skills (also write `evolved_skills.json` in the harness dir)"
+            "\n### Reusable skills"
         )
         lines.append(json.dumps({"skills": skills}, indent=2))
     notes = spec.get("implementation_notes")
     if notes:
         lines.append(f"\n### Implementation notes\n{notes}")
     lines.append(
-        "\nImplement the above in the harness Python files. "
-        "Keep edits minimal and test-safe. "
-        "Do NOT edit base.py or append dynamic text (step counters, timestamps) "
-        "to tool responses — tasks with message_history require byte-stable replay."
+        "\nImplement only the agreed changes. Keep edits minimal and test-safe."
     )
     return "\n".join(lines)

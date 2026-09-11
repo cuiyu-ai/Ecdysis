@@ -1,26 +1,15 @@
-﻿# Ecdysis package
+# Package Map
 
-`src/ecdysis/` contains the first-party implementation for runtime-harness evolution.
-
-## Modules
-
-| Path | Purpose |
+| Module | Responsibility |
 |---|---|
-| `evolution.py` | Failure extraction, mixed-training grouping, OpenCode staging, and evolution analysis helpers |
-| `artifacts.py` | Versioned evolved-skill artifacts |
-| `harness_patch.py` | Harness patch representation, application, and persistence |
-| `harness_replay.py` | Replay preflight checks for staged harness changes |
-| `experiment_config.py` | Shared experiment defaults and command-building helpers |
-| `experiments/` | Experiment runner classes |
-| `pipeline/` | Shared evaluation, logging, timing, persistence, and guardrail steps |
-| `mad/` | Multi-agent debate roles and moderator synthesis |
-| `harness/` | Extracted runtime-harness modules |
+| `evolution.py` | Thresholded failure extraction, evidence compaction, cross-instance grouping, and score helpers |
+| `training.py` | Collect-refine-edit-validate loop and frozen-harness inference |
+| `inference.py` | Batch execution, outcome records, timing, and JSONL export |
+| `benchmark.py` | External benchmark adapter protocol and CLI runner |
+| `fdcr/` | Analyst, Critic, Engineer, and Moderator refinement passes |
+| `artifacts.py` | Validation, merging, and persistence of reusable skills |
+| `llm_client.py` | Minimal compatible chat-completions client |
 
-## Artifacts
-
-Ecdysis stores learned harness behavior in two structured forms:
-
-1. **H5 skills:** `SkillArtifact` JSON, loaded by evaluation with `--skill-artifact`.
-2. **H2/H3/H4 patches:** `HarnessPatch` JSON, applied to the runtime harness between training rounds.
-
-Generated artifacts, local run settings, raw traces, and secrets are intentionally excluded from the public tree.
+The package uses dependency injection for task execution, candidate editing, and
+scoring. Its core algorithms therefore remain independent of task-specific assets
+and local run settings.
