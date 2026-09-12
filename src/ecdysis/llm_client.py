@@ -1,12 +1,10 @@
-"""Chat-completions client for Ecdysis (DashScope / OpenRouter / OpenAI-compatible).
+"""Minimal chat-completions client used by FDCR.
 
 Auto-detects the right "disable thinking" body key from ``base_url``:
 
 - DashScope (``dashscope.aliyuncs.com``) → ``{"enable_thinking": False}``
 - OpenRouter (``openrouter.ai``) → ``{"reasoning": {"enabled": False}}``
-- Other OpenAI-compatible → no special reasoning field
-
-Kept a ``OpenRouterClient`` name alias for back-compat with older imports.
+- Other OpenAI-compatible endpoints receive no special reasoning field.
 """
 
 from __future__ import annotations
@@ -213,7 +211,11 @@ class LLMClient:
         for attempt in range(1, self.max_retries + 1):
             try:
                 response = self.client.chat.completions.create(**kwargs)
-                self._record_usage(response, attempts=attempt, duration_seconds=time.monotonic() - started)
+                self._record_usage(
+                    response,
+                    attempts=attempt,
+                    duration_seconds=time.monotonic() - started,
+                )
                 return response.choices[0].message.content or ""
             except (RateLimitError, APIConnectionError) as exc:
                 last_exc = exc
@@ -243,50 +245,3 @@ class LLMClient:
         overrides.setdefault("response_format", {"type": "json_object"})
         text = self.chat(messages, temperature=temperature, **overrides)
         return _extract_json_object(text)
-
-
-# Back-compat alias for older imports.
-OpenRouterClient = LLMClient
-
-
-def build_client_from_exp_config(
-    exp_config: dict[str, Any],
-    role: str = "evolution",
-) -> LLMClient:
-    """Build an LLM client from experiment YAML model fields."""
-    import os
-
-    role_fields = {
-        "evolution": (
-            "evolution_llm",
-            "evolution_api_base",
-            "evolution_api_key_env",
-            "agent_llm",
-            "agent_api_base",
-            "agent_api_key_env",
-        ),
-        "judge": (
-            "judge_llm",
-            "judge_api_base",
-            "judge_api_key_env",
-            "evolution_llm",
-            "evolution_api_base",
-            "evolution_api_key_env",
-        ),
-    }
-    if role not in role_fields:
-        raise ValueError(f"Unknown LLM role: {role}")
-    model_key, base_key, key_env_key, fb_model, fb_base, fb_key_env = role_fields[
-        role
-    ]
-    model = exp_config.get(model_key) or exp_config.get(fb_model)
-    if not model:
-        raise ValueError(f"No model configured for role '{role}'")
-    base_url = exp_config.get(base_key) or exp_config.get(fb_base) or DEFAULT_BASE_URL
-    key_env = (
-        exp_config.get(key_env_key)
-        or exp_config.get(fb_key_env)
-        or DEFAULT_API_KEY_ENV
-    )
-    api_key = os.getenv(str(key_env)) if key_env else None
-    return LLMClient(model=model, api_key=api_key, base_url=base_url)

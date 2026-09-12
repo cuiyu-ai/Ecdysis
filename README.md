@@ -1,96 +1,153 @@
-﻿# Ecdysis: Efficient and Effective Training of Runtime Harnesses for LLM Agents
+# Ecdysis
 
-[Project Page](https://github.com/cuiyu-ai/Ecdysis) | **Project Lead:** Yu Cui (<cuiyu@bit.edu.cn>)
+Official method-level implementation for
+[*Ecdysis: Efficient and Effective Training of Runtime Harnesses for LLM Agents*](https://arxiv.org/abs/2609.11677).
 
-**Research status:** ongoing research release. This repository publishes the main Ecdysis implementation used for runtime-harness evolution while excluding local experiment configuration files, credentials, raw benchmark data, generated traces, and private run artifacts.
-
-## Motivation
-
-Existing harness-evolution workflows commonly inspect one failed trajectory at a time. That local view can produce narrow patches, duplicate effort across related failures, and miss failure modes that only become clear when several task instances are considered together.
-
-Ecdysis asks a different question: **can shared failure structure across tasks guide more general, auditable runtime-harness updates?**
+Ecdysis improves a runtime harness while keeping the task model, execution
+environment, and scoring function fixed. The public package contains the general
+training algorithm, FDCR, artifact schemas, and synthetic tests. Task-specific
+assets and local run files are intentionally outside this repository.
 
 ## Method
 
-The workflow has four stages:
+Each training round follows the paper's acceptance loop:
 
-1. Run the current agent and harness on a batch of task instances.
-2. Extract and group failures that share a recurring behavioral or policy pattern.
-3. Analyze each group collectively and produce a concrete harness-update specification.
-4. Apply the update in an isolated staging environment, then evaluate it on held-out tasks.
+1. Collect trajectories with the currently retained harness.
+2. Mark a trajectory as failed when its fixed score is below `failure_threshold`.
+3. Aggregate structured failure evidence and prioritize patterns recurring across
+   distinct task instances; singleton patterns remain auxiliary evidence.
+4. Run Failure-Driven Collaborative Refinement (FDCR) for `refinement_passes`.
+5. Pass the structured specification to an isolated candidate editor.
+6. Retain the candidate only when its training score strictly improves.
 
-The research design studies two complementary components:
+After the final round, the retained harness is frozen for inference.
 
-- **Mixed Training:** groups recurring failure patterns across task instances and reasons over them jointly instead of patching each trajectory independently.
-- **Multi-Agent Debate (MAD):** uses analyst, critic, engineer, and moderator roles to challenge the diagnosis and synthesize an implementation-ready update specification.
+## Paper To Code
 
-The intended comparison progresses from no harness and a frozen harness, through serial single-task evolution, to Mixed Training and the full Mixed Training + MAD method.
+| Paper component | Implementation |
+|---|---|
+| Failure signal and evidence aggregation | `ecdysis.evolution.collect_failed_trajectories` |
+| Batch-level cross-instance grouping | `ecdysis.evolution.group_failures_by_pattern` |
+| FDCR roles and moderator | `ecdysis.fdcr.run_harness_fdcr` |
+| Candidate validation and freezing | `ecdysis.training.EcdysisTrainer` |
+| Frozen-harness inference | `ecdysis.training.TrainingResult.infer` |
+| Reusable learned behavior | `ecdysis.artifacts.SkillArtifact` |
 
-## Experimental Results
+## Install
 
-Macro-averaged results across the ten model-domain cells:
-
-| Method | AVG (%) | Pass@3 (%) | Pass^3 (%) | Tokens (M) | Time (s) |
-|---|---:|---:|---:|---:|---:|
-| Direct | 38.17 &plusmn; 5.85 | 53.50 | 22.50 | 8.701 &plusmn; 0.863 | 87.91 &plusmn; 10.06 |
-| Human-Aug. | 51.67 &plusmn; 8.47 | 66.00 | 37.00 | 11.349 &plusmn; 1.298 | 118.53 &plusmn; 20.90 |
-| Self-Evolution | 46.67 &plusmn; 9.22 | 63.50 | 29.00 | 11.567 &plusmn; 1.148 | 126.08 &plusmn; 16.59 |
-| **Ecdysis (w/o MAD)** | 54.67 &plusmn; 5.55 | 66.50 | 42.00 | 10.354 &plusmn; 1.169 | 131.42 &plusmn; 24.29 |
-| **Ecdysis (w/ MAD)** | **59.33 &plusmn; 5.08** | **71.50** | **45.00** | 10.157 &plusmn; 0.852 | 118.69 &plusmn; 13.27 |
-
-Training time (s) for the three harness self-evolution methods:
-
-| Dataset | Self-Evolution | Ecdysis (w/o MAD) | Ecdysis (w/ MAD) | Speedup |
-|---|---:|---:|---:|---:|
-| Retail | 1,831.4 | 1,292.4 | 1,405.9 | 1.42&times; / 1.30&times; |
-| Airline | 8,120.6 | 2,510.8 | 4,403.0 | **3.23&times;** / 1.84&times; |
-
-## Repository Layout
-
-```text
-src/ecdysis/
-  evolution.py                 Failure processing and harness-evolution analysis
-  artifacts.py                 Versioned evolved-skill artifacts
-  experiment_config.py         Shared experiment defaults and command construction
-  harness_patch.py             Patch application and artifact persistence
-  harness_replay.py            Replay preflight for staged harness changes
-  experiments/                 Experiment runner implementations
-  pipeline/                    Shared evaluation, logging, timing, and guardrail steps
-  mad/                         Multi-agent debate roles and synthesis
-  harness/                     Extracted runtime-harness modules
-scripts/                       Evaluation, experiment, aggregation, and timing CLIs
-tests/                         Public-tree and core artifact tests
-```
-
-## Usage
-
-Install the package in editable mode:
+Ecdysis requires Python 3.12 or 3.13.
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-Run the lightweight checks:
+## Quickstart
+
+Run the synthetic end-to-end training and batch-inference example:
 
 ```bash
-python -m unittest discover -s tests -v
-python -m compileall -q src scripts
+python examples/quickstart.py
 ```
 
-Experiment scripts accept user-supplied local YAML run files. Those files are intentionally not part of this public release.
+Expected output:
 
-## Acknowledgments
-
-This project is motivated in part by [Life-Harness](https://arxiv.org/abs/2605.22166) and ongoing work on self-improving agent harnesses.
-
-## Citation
-
-```bibtex
-@misc{ecdysis2026,
-  title        = {Ecdysis: Efficient and Effective Training of Runtime Harnesses for LLM Agents},
-  author       = {Ruiqing Yue and Yu Cui and Xianhong Xue and Tingyu Li and Ting Li and Wenzhuo Zhu and Zhe Cui and Haibin Zhang and Cong Zuo},
-  year         = {2026},
-  howpublished = {\url{https://github.com/cuiyu-ai/Ecdysis}},
-  note         = {Code repository}
-}
+```text
+final_score=1.0
+example task @ revision 1
+second task @ revision 1
 ```
+
+To analyze an existing JSON result file without running FDCR:
+
+```bash
+ecdysis path/to/results.json
+```
+
+The input is a JSON object with `tasks` and `simulations` arrays. Each simulation
+may contain `task_id`, `trial`, `messages`, `termination_reason`, and a
+`reward_info` object with `reward` and `reward_breakdown`.
+
+## Integration Contract
+
+`EcdysisTrainer` has three external adapters:
+
+- `collector(harness)` executes the fixed task model and environment, returning
+  scored trajectory records.
+- `editor(harness, specification, failures, groups)` creates an isolated candidate
+  without mutating the retained harness.
+- `scorer(results)` computes the fixed aggregate training score. The default is
+  the arithmetic mean of available trajectory rewards.
+
+This separation keeps FDCR responsible for diagnosis and specification, while the
+editor remains responsible for implementation.
+
+## Inference Contract
+
+After training, `TrainingResult` keeps the accepted harness frozen. Use
+`infer_many(tasks, executor)` or `InferenceRunner` to run a batch without further
+adaptation. The executor is the only task or environment adapter:
+
+```python
+from ecdysis.inference import InferenceRunner
+
+runner = InferenceRunner(
+    frozen_harness,
+    lambda harness, task: execute_with_environment(harness, task),
+)
+result = runner.run(tasks)
+result.write_jsonl("inference.jsonl")
+```
+
+Each record contains the task, stable task identifier, output or error, and
+elapsed time. Failed tasks are retained in the batch result; pass `fail_fast=True`
+when the surrounding evaluation requires immediate interruption.
+
+## External Benchmarks
+
+The repository does not redistribute benchmark data. Use the same adapter
+contract for the paper's external benchmarks, including tau2 and AgentBench:
+
+- `load_tasks(split)` loads tasks from the user's separately installed benchmark;
+- `execute(harness, task)` runs one task with the frozen harness;
+- `encode_output(output)` converts the benchmark result to JSON-safe data;
+- `name` and `version` record the external benchmark and pinned commit/version.
+
+The generic runner is available as both Python API (`run_benchmark`) and CLI:
+
+```bash
+ecdysis-run \
+  --adapter my_tau2_adapter:build_adapter \
+  --harness my_harness:load_frozen_harness \
+  --split test \
+  --output results/inference.jsonl
+```
+
+The adapter module, benchmark installation, and harness are user-provided. No
+dataset, secret, or local configuration is read from this repository. Record the
+external benchmark commit and the command used for each reported experiment.
+
+## Repository Layout
+
+```text
+src/ecdysis/
+  evolution.py       Failure extraction, aggregation, and stability checks
+  training.py        Training loop, strict validation, and frozen inference
+  inference.py       Batch inference runner and JSONL result records
+  benchmark.py       External benchmark adapter protocol and CLI runner
+  artifacts.py       Versioned reusable-skill artifacts
+  fdcr/              Collaborative refinement and moderator synthesis
+  llm_client.py       Compatible chat-completions client
+examples/
+  quickstart.py      Synthetic end-to-end example
+tests/                Unit and integration tests with synthetic records
+```
+
+## Development
+
+```bash
+python -m pytest
+ruff check .
+```
+
+The public-tree test rejects local settings, generated outputs, legacy terminology,
+and task-specific source code.

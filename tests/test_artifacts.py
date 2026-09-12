@@ -1,14 +1,8 @@
 ﻿from __future__ import annotations
 
-import sys
 import tempfile
 import unittest
 from pathlib import Path
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SRC_DIR = PROJECT_ROOT / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
 
 from ecdysis.artifacts import (
     EvolvedSkill,
@@ -31,10 +25,10 @@ def skill(skill_id: str) -> EvolvedSkill:
 class ArtifactTest(unittest.TestCase):
     def test_skill_artifact_round_trips_through_json(self) -> None:
         artifact = SkillArtifact(
-            experiment="E4",
-            domain="airline",
+            experiment="mixed-training",
+            scope="primary",
             round=2,
-            mode="cross_instance",
+            mode="mixed_training",
             skills=[skill("structured-errors")],
         )
 
@@ -45,22 +39,28 @@ class ArtifactTest(unittest.TestCase):
         self.assertEqual(loaded.to_dict(), artifact.to_dict())
 
     def test_merge_deduplicates_skills_and_rejects_wrong_domain(self) -> None:
-        first = SkillArtifact("E4", "airline", 1, "cross_instance", [skill("a")])
+        first = SkillArtifact(
+            "mixed-training", "primary", 1, "mixed_training", [skill("a")]
+        )
         second = SkillArtifact(
-            "E4", "airline", 2, "cross_instance", [skill("a"), skill("b")]
+            "mixed-training",
+            "primary",
+            2,
+            "mixed_training",
+            [skill("a"), skill("b")],
         )
 
         merged = merge_skill_artifacts(
-            experiment="E4",
-            domain="airline",
+            experiment="mixed-training",
+            scope="primary",
             round_num=3,
-            mode="cross_instance",
+            mode="mixed_training",
             artifacts=[first, second],
         )
 
         self.assertEqual([item.id for item in merged.skills], ["a", "b"])
         with self.assertRaises(ValueError):
-            first.validate_for_domain("retail")
+            first.validate_for_scope("secondary")
 
 
 if __name__ == "__main__":
