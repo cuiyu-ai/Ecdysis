@@ -1,12 +1,9 @@
-# Ecdysis
+# Ecdysis: Rethinking Failure-Driven Evolution of LLM Agent Harnesses
 
 Official method-level implementation for
 [*Ecdysis: Efficient and Effective Training of Runtime Harnesses for LLM Agents*](https://arxiv.org/abs/2609.11677).
 
-Ecdysis improves a runtime harness while keeping the task model, execution
-environment, and scoring function fixed. The public package contains the general
-training algorithm, FDCR, artifact schemas, and synthetic tests. Task-specific
-assets and local run files are intentionally outside this repository.
+Self-evolving runtime harnesses can substantially improve the capabilities of large language model (LLM) agents and provide a promising paradigm for optimizing agent execution. Existing failure-driven approaches often treat observed agent failures as direct evidence for harness modification. A key challenge in failure-driven harness evolution is that observed failures can reflect either limitations of the underlying model or systematic deficiencies of the harness. Directly optimizing against individual failures can therefore induce model-specific accommodation and impair generalization across tasks and models. We study whether failure evidence accumulated across task instances can provide a more reliable signal for harness training. Our key insight is that failures recurring across distinct tasks provide stronger inductive evidence for systematic harness deficiencies than isolated failures. Based on this insight, we propose \textsc{Ecdysis}, which aggregates failure evidence across task instances before promoting recurring failure patterns into persistent harness evolution, biasing evolution toward repairs that are more likely to generalize beyond individual model behaviors. \textsc{Ecdysis} further employs collaborative failure analysis to refine modification specifications, trading additional evolution-time reasoning for improved modification quality. Across multiple LLMs and benchmarks, \textsc{Ecdysis} improves the reasoning accuracy of evolved harnesses by 18.56\% over existing harness evolution while achieving up to 1.84$\times$ faster harness training. \textsc{Ecdysis} also enables more data-efficient training. Fine-grained analysis shows that \textsc{Ecdysis} reduces model-specific accommodation during evolution, while the resulting harnesses exhibit stronger cross-LLM generalization and lower inference-time token consumption. These results suggest that effective harness training depends not only on how failures are repaired, but also on which failures provide reliable evidence for persistent harness changes.
 
 ## Method
 
