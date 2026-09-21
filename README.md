@@ -145,6 +145,3 @@ tests/                Unit and integration tests with synthetic records
 python -m pytest
 ruff check .
 ```
-
-The public-tree test rejects local settings, generated outputs, legacy terminology,
-and task-specific source code.

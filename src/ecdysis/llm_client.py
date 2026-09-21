@@ -126,7 +126,7 @@ class LLMClient:
         if OpenAI is None:
             raise RuntimeError(
                 "The 'openai' package is required for real LLM calls. "
-                "Install project dependencies before running without --dry-run."
+                "Install it with 'pip install openai'."
             )
         self.model = _normalize_model(model)
         self.base_url = base_url
