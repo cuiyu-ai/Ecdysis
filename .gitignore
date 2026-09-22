@@ -12,10 +12,10 @@ env/
 *.env
 
 # Local run inputs
-configs/
-data/
-*.yaml
-*.yml
+/configs/local/
+/data/
+*.local.yaml
+*.local.yml
 
 # Generated outputs and local work areas
 outputs/
